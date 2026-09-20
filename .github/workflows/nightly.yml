@@ -1,0 +1,71 @@
+name: nightly-regression
+
+# 夜间回归：GDD §11.2 "MC 回归进 CI"。
+# 触发：每日 02:00 UTC（北京时间 10:00）+ 手动。
+# 注意：headless 浏览器需要 --enable-unsafe-swiftshader（已在 cdp.mjs 内置）；
+# ubuntu-latest 自带的 Chrome 也能跑，但为了行为一致性固定用 Playwright 装的 Chromium。
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: npm i -g pnpm@10
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: node node_modules/typescript/bin/tsc --noEmit
+
+      - name: Build
+        run: node node_modules/vite/bin/vite.js build
+
+      - name: Start headless Chrome deps
+        run: |
+          # 无头 Chrome 需要的共享库（GitHub runner 大多自带，兜底装一遍）
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2 || true
+
+      - name: Start dev server
+        run: |
+          node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 4173 --strictPort &
+          sleep 3
+          curl -fsS http://127.0.0.1:4173/ > /dev/null
+
+      - name: Smoke (33 assertions)
+        run: node scripts/smoke.mjs
+        env:
+          APP_URL: http://127.0.0.1:4173/
+
+      - name: Monte-Carlo regression gate
+        run: node scripts/mc.mjs
+        env:
+          APP_URL: http://127.0.0.1:4173/
+          MC_RUNS: '20'
+          MC_CAP_S: '600'
+          CDP_WATCHDOG_MS: '5400000'
+
+      - name: Pacing sim
+        run: node node_modules/tsx/dist/cli.mjs scripts/sim.ts
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-failure
+          path: |
+            telemetry/
+          if-no-files-found: ignore

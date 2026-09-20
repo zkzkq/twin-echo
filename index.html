@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b0e14" />
+  <title>双影回响 Twin Echo — M1 战斗原型</title>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="vignette"></div>
+  <div id="hurtfx"></div>
+  <div id="burstfx"></div>
+  <div id="ui">
+    <div id="hud" class="hidden">
+      <div id="topbar">
+        <div id="hpwrap"><div id="hpbar"></div><span id="hptext">100 / 100</span></div>
+        <div id="clock">00:00</div>
+      </div>
+      <div id="bossbar" class="hidden">
+        <div id="bossname">分针兽</div>
+        <div id="bosstrack"><div id="bossfill"></div></div>
+      </div>
+      <div id="resonance">
+        <div id="resRing"><span id="resKey">0</span></div>
+        <div id="resLabel">共 鸣</div>
+      </div>
+      <div id="infobar">
+        <span id="crystaltext">◇ 结晶 0</span>
+        <span id="altarhint"></span>
+        <span id="eventtext"></span>
+      </div>
+      <div id="slots">
+        <div id="wslots" class="slotrow"></div>
+        <div id="pslots" class="slotrow"></div>
+      </div>
+      <div id="xpwrap"><div id="xpbar"></div><span id="lvtext">Lv 1</span></div>
+    </div>
+
+    <div id="toasts"></div>
+
+    <div id="title" class="panel">
+      <div class="panelbox">
+        <div class="eyebrow">M2 垂直切片 · 20 分钟标准局 · 需要键盘</div>
+        <h1 class="logotitle">双影回响</h1>
+        <div class="sub">TWIN ECHO · 与 2.5 秒前的自己并肩作战</div>
+        <div class="mech">
+          <p><b class="a">琥珀色</b>是你，<b class="c">青蓝色残影</b>会在 2.5 秒后重演你的每一步与每一次攻击</p>
+          <p>两者在 <b class="a">1 秒内</b>先后命中同一个敌人 = <b class="c">共鸣击</b>：伤害 ×1.3 · 共鸣值充能</p>
+          <p>共鸣值攒满按 <span class="kbcap">空格</span> 释放<b class="c">同步爆发</b> · 生存 20 分钟即胜利</p>
+          <p>精英掉<b class="a">回响结晶</b> · 武器满级 + 配方被动满级 + 结晶 ×2 → 走到<b class="c">祭坛</b>完成进化</p>
+        </div>
+        <div class="ctrls">
+          <span><span class="kbcap">W A S D</span> 移动</span>
+          <span><span class="kbcap">空格 / E</span> 同步爆发</span>
+          <span><span class="kbcap">P / Esc</span> 暂停</span>
+        </div>
+        <button class="btn primary" id="btnStart">开始游戏（Enter）</button>
+        <div class="row" style="margin-top:14px">
+          <button class="btn small" id="btnMetaTitle">回响密库（局外成长）</button>
+          <button class="btn small ghost" id="btnMetaExport">导出存档码</button>
+          <button class="btn small ghost" id="btnMetaImport">导入存档码</button>
+        </div>
+        <div class="foot">v0.2 M2 垂直切片 · 对应 GDD §12.2 垂直切片 · 数值均为 [待测试] 假设</div>
+      </div>
+    </div>
+
+    <div id="levelup" class="panel hidden">
+      <div class="panelbox">
+        <div class="eyebrow c">LEVEL UP · 选择你的回响</div>
+        <div id="cards"></div>
+        <div class="row">
+          <button class="btn small" id="btnReroll">重掷 ×1（R）</button>
+          <button class="btn small ghost" id="btnSkip">跳过（无奖励）</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="meta" class="panel hidden">
+      <div class="panelbox">
+        <div class="eyebrow c">回响密库 · 局外永久天赋</div>
+        <h2 id="metaTitle">回响密库</h2>
+        <div class="mech"><p>时砂：<b class="a" id="metaSand">0</b> · 已投入 / 总需求：<span id="metaProgress">0 / 0</span></p></div>
+        <div id="metaBranches"></div>
+        <div class="row">
+          <button class="btn small primary" id="btnMetaClose">返回（Esc）</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="altar" class="panel hidden">
+      <div class="panelbox">
+        <div class="eyebrow c">回响祭坛 · 确定性进化</div>
+        <h2>选择一件进化</h2>
+        <div class="mech"><p>消耗 <b class="a">回响结晶 ×2</b> · 条件全透明 · 引导途中受击会打断</p></div>
+        <div id="altarCards"></div>
+        <div class="row">
+          <button class="btn small ghost" id="btnAltarSkip">暂不进化（Esc）</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="pause" class="panel hidden">
+      <div class="panelbox">
+        <h2>暂 停</h2>
+        <div id="pauseStats" class="buildlist"></div>
+        <div class="row">
+          <button class="btn primary" id="btnResume">继续（P）</button>
+          <button class="btn" id="btnRestart">重开一局（R）</button>
+          <button class="btn ghost" id="btnQuit">返回标题（T）</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="result" class="panel hidden">
+      <div class="panelbox">
+        <div class="eyebrow" id="resEyebrow">RUN COMPLETE</div>
+        <h1 id="resTitle" class="logotitle small">被淹没</h1>
+        <div id="resultStats" class="stats"></div>
+        <div class="hintline" id="resHint"></div>
+        <div class="row">
+          <button class="btn primary" id="btnAgain">再来一局（R）</button>
+          <button class="btn ghost" id="btnTitle">返回标题（T）</button>
+          <button class="btn small" id="btnMetaResult">回响密库</button>
+          <button class="btn small ghost" id="btnExport">导出遥测 CSV</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="errbanner" class="hidden"></div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

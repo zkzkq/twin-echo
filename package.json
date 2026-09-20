@@ -1,0 +1,33 @@
+{
+  "name": "twin-echo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "双影回响 Twin Echo — M1 战斗原型（幸存者like 割草 Roguelite）",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "sim": "tsx scripts/sim.ts",
+    "smoke": "node scripts/smoke.mjs",
+    "probe": "node scripts/probe.mjs",
+    "bench": "node scripts/bench.mjs",
+    "mc": "node scripts/mc.mjs",
+    "ab": "node scripts/ab-resonance.mjs",
+    "telemetry": "node scripts/summarize-telemetry.mjs",
+    "nightly": "node node_modules/typescript/bin/tsc --noEmit && node node_modules/vite/bin/vite.js build && node scripts/smoke.mjs && node scripts/mc.mjs"
+  },
+  "dependencies": {
+    "pixi.js": "^8.6.6"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
