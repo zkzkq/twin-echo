@@ -69,6 +69,12 @@ export class World {
   readonly onEvent: (e: WorldEvent) => void;
   /** 输入轴（-1..1），由 Game 每帧写入 */
   readonly input = { x: 0, y: 0 };
+  /**
+   * 鼠标操控（M3）：UI 层只写"屏幕坐标 + 是否按下"，**世界在 updatePlayer 里用当前相机换算**成世界坐标。
+   * 为什么不提前换算：相机每帧在跟随玩家移动，提前换算会滞后一帧；而且屏震（随机偏移）不能进换算，
+   * 否则准星会随屏震抖动。换算后写入 x/y，准星渲染直接读它。
+   */
+  readonly pointer = { active: false, hold: false, persistent: false, inside: false, sx: 0, sy: 0, x: 0, y: 0 };
 
   rng = new RNG(1);
   frame = 0;
@@ -484,6 +490,24 @@ export class World {
 
     let mx = this.input.x;
     let my = this.input.y;
+    // 鼠标操控（M3）：按下/常驻时改为"朝光标"，并覆盖键盘轴（松手即回键盘）
+    if (this.pointer.active && this.viewW > 0) {
+      const wx = this.pointer.sx - this.viewW / 2 + this.camX;
+      const wy = this.pointer.sy - this.viewH / 2 + this.camY;
+      this.pointer.x = wx;
+      this.pointer.y = wy;
+      const dx = wx - p.x;
+      const dy = wy - p.y;
+      const d = Math.hypot(dx, dy);
+      if (d > 1) p.facing = Math.atan2(dy, dx); // 站定也面向光标（钟摆镰/时之沙暴等定向武器吃得到）
+      if (d > BAL.player.pointerDeadZone) {
+        mx = dx / d;
+        my = dy / d;
+      } else {
+        mx = 0;
+        my = 0;
+      }
+    }
     const l = Math.hypot(mx, my);
     if (l > 0.01) {
       mx /= l;

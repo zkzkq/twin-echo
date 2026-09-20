@@ -14,6 +14,8 @@ export interface TEX {
   bolt: Texture;
   butterfly: Texture;
   ring: Texture;
+  /** M3：鼠标准星（专用贴图——复用 ring 缩放后线宽只剩 2px，太淡） */
+  reticle: Texture;
   gem: Texture;
   heal: Texture;
   particle: Texture;
@@ -125,6 +127,18 @@ export function makeTextures(renderer: Renderer): TEX {
     g.circle(0, 0, 40).stroke({ width: 5, color: WHITE, alpha: 0.95 });
   });
 
+  // 鼠标准星（M3）：外圈 + 中心点 + 四向刻度，即使缩到 32px 也读得出来
+  const reticle = gen((g) => {
+    g.circle(0, 0, 15).stroke({ width: 3, color: WHITE, alpha: 1 });
+    g.circle(0, 0, 3).fill({ color: WHITE, alpha: 1 });
+    for (let i = 0; i < 4; i++) {
+      const a = (i * Math.PI) / 2;
+      const cx = Math.cos(a);
+      const cy = Math.sin(a);
+      g.moveTo(cx * 17, cy * 17).lineTo(cx * 24, cy * 24).stroke({ width: 3, color: WHITE, alpha: 0.9 });
+    }
+  });
+
   const gem = gen((g) => {
     g.poly([0, -8, 7, 0, 0, 8, -7, 0]).fill({ color: WHITE });
   });
@@ -179,7 +193,7 @@ export function makeTextures(renderer: Renderer): TEX {
 
   return {
     player, moth, idol, hopper, cultist, eliteRing, boss,
-    needle, bolt, butterfly, ring, gem, heal, particle, bulletE, altar, trail, tile,
+    needle, bolt, butterfly, ring, reticle, gem, heal, particle, bulletE, altar, trail, tile,
   };
 }
 

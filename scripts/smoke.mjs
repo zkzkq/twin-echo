@@ -485,6 +485,80 @@ try {
   check(codex.locked === codex.cards - 3, '图鉴未遭遇条目显示剪影（按存档解锁）', `已解锁 3 / ${codex.cards} · 进度「${codex.unlockedText}」`);
   check(codex.savedKeys === 3 && codex.liveCodex.moth === 1, '图鉴击杀跨局累计写入存档', `存档种类 ${codex.savedKeys} · 本局时蛾 ${codex.liveCodex.moth}`);
 
+  // 12.10 M3：鼠标控制方向（真实 DOM 事件 → 状态 → 世界换算 → 位移）
+  const mouse = await cdp.eval(`(() => {
+    const g = __twinEcho, w = g.world;
+    g.runOptions.character = 'otto'; g.runOptions.paradox = 0;
+    g.startRun();
+    const p = w.player;
+    const canvas = document.querySelector('#app canvas');
+    const rect = canvas.getBoundingClientRect();
+    const E = window.PointerEvent ?? window.MouseEvent;
+    const cx = rect.left + rect.width * 0.75;
+    const cy = rect.top + rect.height * 0.4;
+    const mk = (t, b = 0) => new E(t, { clientX: cx, clientY: cy, button: b, buttons: b === 0 ? 1 : 0, bubbles: true, cancelable: true });
+    // ① 事件路径：按住左键 → 生效；window 上抬手 → 松开
+    canvas.dispatchEvent(mk('pointermove'));
+    canvas.dispatchEvent(mk('pointerdown'));
+    const afterDown = { active: w.pointer.active, hold: w.pointer.hold, inside: w.pointer.inside };
+    const expectSx = (cx - rect.left) * (g.app.screen.width / rect.width);
+    const sxErr = Math.abs(w.pointer.sx - expectSx);
+    window.dispatchEvent(mk('pointerup'));
+    const afterUp = { active: w.pointer.active, hold: w.pointer.hold };
+    // ② 右键 → 常驻跟随开关
+    canvas.dispatchEvent(mk('pointerdown', 2));
+    const persistOn = w.pointer.persistent;
+    canvas.dispatchEvent(mk('pointerdown', 2));
+    const persistOff = w.pointer.persistent;
+    // ③ 世界换算 + 位移：相机贴住玩家时 sx = 640 + (目标x - 玩家x)
+    const W = 1280, H = 720;
+    const step = (tx, ty, n, kb) => {
+      w.viewW = W; w.viewH = H;
+      w.camX = p.x; w.camY = p.y;
+      w.pointer.sx = W / 2 + (tx - p.x);
+      w.pointer.sy = H / 2 + (ty - p.y);
+      w.pointer.active = true;
+      w.input.x = kb ? kb[0] : 0;
+      w.input.y = kb ? kb[1] : 0;
+      const x0 = p.x, y0 = p.y;
+      const f0 = p.facing;
+      for (let i = 0; i < n; i++) { p.invulnT = 9999; w.camX = x0; w.camY = y0; w.update(1/60); }
+      return { dx: +(p.x - x0).toFixed(1), dy: +(p.y - y0).toFixed(1), facing: +p.facing.toFixed(3), f0: +f0.toFixed(3), aimX: Math.round(w.pointer.x), aimY: Math.round(w.pointer.y) };
+    };
+    const right = step(p.x + 300, p.y, 30);          // 光标在右 → 向右走
+    const down = step(p.x, p.y + 300, 30);           // 光标在下 → 向下走（且面向 π/2）
+    const dead = step(p.x + 10, p.y, 30);            // 死区内 → 不动
+    // ④ 键盘回退 & 鼠标覆盖键盘
+    w.pointer.active = false; w.viewW = W; w.viewH = H;
+    w.input.x = 1; w.input.y = 0; p.invulnT = 9999;
+    const kx0 = p.x;
+    for (let i = 0; i < 30; i++) { p.invulnT = 9999; w.update(1/60); }
+    const kbOnly = +(p.x - kx0).toFixed(1);
+    const override = step(p.x + 300, p.y, 30, [-1, 0]);  // 键盘按左 + 鼠标指右 → 应向右
+    // ⑤ 非 run 状态不抢输入（面板打开时鼠标不应操控角色）
+    w.pointer.hold = true; w.pointer.inside = true;
+    const st = g.state; g.state = 'result';
+    g.syncPointerActivePerFrame ? g.syncPointerActivePerFrame() : null;
+    const blocked = w.pointer.active;
+    g.state = st;
+    w.pointer.hold = false; w.pointer.active = false;
+    return { afterDown, afterUp, sxErr: +sxErr.toFixed(2), persistOn, persistOff, right, down, dead, kbOnly, override, blocked };
+  })()`);
+  check(
+    mouse.afterDown.active === true && mouse.afterDown.hold === true && mouse.afterDown.inside === true,
+    '鼠标左键按下 → 操控生效（真实 DOM 事件路径）',
+    `active=${mouse.afterDown.active} · hold=${mouse.afterDown.hold}`,
+  );
+  check(mouse.sxErr < 1, '光标屏幕坐标换算正确（CSS 尺寸 → 渲染像素）', `误差 ${mouse.sxErr}px`);
+  check(mouse.afterUp.active === false && mouse.afterUp.hold === false, '抬手（window 监听）→ 立刻回到键盘操控');
+  check(mouse.persistOn === true && mouse.persistOff === false, '右键单击 → 常驻跟随开关可切换', `开=${mouse.persistOn} → 关=${mouse.persistOff}`);
+  check(mouse.right.dx > 60 && Math.abs(mouse.right.dy) < 3, '按住左键 → 朝光标满速移动（右）', `Δ(${mouse.right.dx}, ${mouse.right.dy}) · 目标点 (${mouse.right.aimX}, ${mouse.right.aimY})`);
+  check(mouse.down.dy > 60 && Math.abs(mouse.down.dx) < 3 && Math.abs(mouse.down.facing - Math.PI / 2) < 0.05, '朝下移动且面向光标（定向武器可用）', `Δ(${mouse.down.dx}, ${mouse.down.dy}) · facing=${mouse.down.facing}`);
+  check(Math.abs(mouse.dead.dx) < 1 && Math.abs(mouse.dead.dy) < 1, '光标进入死区（26px）→ 停下，不抖动', `Δ(${mouse.dead.dx}, ${mouse.dead.dy})`);
+  check(mouse.kbOnly > 60, '未使用鼠标时键盘照常生效', `键盘右移 ${mouse.kbOnly}px`);
+  check(mouse.override.dx > 60, '鼠标生效时覆盖键盘轴（不叠加）', `键盘左 + 鼠标右 → Δx ${mouse.override.dx}`);
+  check(mouse.blocked === false, '非 run 状态（面板打开）鼠标不抢输入');
+
   // 12.8 M3：角色特性 / 悖论难度 / 每日挑战 / 挑战解锁
   const m3 = await cdp.eval(`(() => {
     const g = __twinEcho;

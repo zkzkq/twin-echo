@@ -43,6 +43,8 @@ interface SaveData {
   mapsBeaten: string[];
   /** M3：图鉴击杀统计（种类 id → 累计击杀数；有记录即视为已解锁） */
   codex: Record<string, number>;
+  /** M3：鼠标操控的首次提示只弹一次 */
+  pointerHinted?: boolean;
 }
 
 interface DailyRecord {
@@ -93,6 +95,8 @@ export class Game {
   private playerC = new Container();
   private fxC = new Container();
   private bgTile!: TilingSprite;
+  /** M3：鼠标操控准星 */
+  private reticle: Sprite | null = null;
 
   private saved: SaveData = {
     sand: 0, runs: 0, bestTime: 0, bestWin: false, firstRun: true, nodes: [],
@@ -122,6 +126,13 @@ export class Game {
     this.app.stage.addChild(this.bgTile);
     this.worldC.addChild(this.gemC, this.enemyC, this.bulletC, this.playerC, this.fxC);
     this.app.stage.addChild(this.worldC);
+    // 鼠标操控准星（M3）：专用贴图（外圈+中心点+四向刻度），只在使用鼠标时显示
+    this.reticle = new Sprite(this.tex.reticle);
+    this.reticle.anchor.set(0.5);
+    this.reticle.tint = COLORS.eliteRing;
+    this.reticle.alpha = 1;
+    this.reticle.visible = false;
+    this.fxC.addChild(this.reticle);
     // 地形障碍精灵池（随相机附近区块动态绑定）
     for (let i = 0; i < 64; i++) {
       const s = new Sprite(this.tex.ring);
@@ -174,8 +185,10 @@ export class Game {
     window.addEventListener('keyup', (e) => this.keys.delete(normKey(e.key)));
     window.addEventListener('blur', () => {
       this.keys.clear();
+      this.releasePointer();
       if (this.state === 'run') this.togglePause(true);
     });
+    this.bindPointer();
 
     this.app.ticker.add((tk) => this.tick(tk));
     this.ui.showTitle();
@@ -183,8 +196,94 @@ export class Game {
     this.ready = true;
   }
 
-  // ---------- 存档 ----------
+  // ---------- 鼠标操控（M3） ----------
 
+  /**
+   * 鼠标控制方向（GDD §10.2）：
+   *   - **按住左键**：临时朝光标移动（松手立刻回到键盘，两种输入可随时混用）；
+   *   - **右键单击**：切换"常驻跟随"（20 分钟的长局不必一直按着）；
+   *   - 光标进入死区（`BAL.player.pointerDeadZone`）则停下，避免在角色身上抖动；
+   *   - 抬起/离开画布/窗口失焦 → 立刻松开，防止"松手后一直朝旧方向跑"。
+   * 坐标只存屏幕像素，换算交给 World（相机在动）。
+   */
+  private bindPointer(): void {
+    const canvas = this.app.canvas;
+    const toScreen = (e: PointerEvent): void => {
+      const rect = canvas.getBoundingClientRect();
+      const scr = this.app.screen;
+      // CSS 尺寸与渲染尺寸可能不同（缩放/DPR），按比例换回渲染像素
+      const kx = rect.width > 0 ? scr.width / rect.width : 1;
+      const ky = rect.height > 0 ? scr.height / rect.height : 1;
+      this.world.pointer.sx = (e.clientX - rect.left) * kx;
+      this.world.pointer.sy = (e.clientY - rect.top) * ky;
+    };
+    canvas.addEventListener('pointerdown', (e) => {
+      toScreen(e);
+      this.world.pointer.inside = true;
+      if (e.button === 2) {
+        this.world.pointer.persistent = !this.world.pointer.persistent;
+        this.syncPointerActive();
+        this.ui.toast(
+          this.world.pointer.persistent
+            ? '鼠标常驻跟随已开启——再按右键关闭（左键按住也可临时跟随）'
+            : '鼠标常驻跟随已关闭——按住左键仍可临时跟随',
+          'cyan',
+        );
+        return;
+      }
+      if (e.button !== 0) return;
+      this.world.pointer.hold = true;
+      this.syncPointerActive();
+      if (!this.saved.pointerHinted) {
+        this.saved.pointerHinted = true;
+        this.save();
+        this.ui.toast('鼠标操控：按住左键朝光标移动 · 右键切换常驻跟随（松手即回键盘）', 'cyan');
+      }
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      toScreen(e);
+      this.world.pointer.inside = true;
+      this.syncPointerActive();
+    });
+    canvas.addEventListener('pointerenter', (e) => {
+      toScreen(e);
+      this.world.pointer.inside = true;
+      this.syncPointerActive();
+    });
+    canvas.addEventListener('pointerleave', () => {
+      this.world.pointer.inside = false;
+      this.releasePointer();
+    });
+    // 抬手监听挂在 window：拖到画布外/面板上松手也要能松开
+    window.addEventListener('pointerup', (e) => {
+      if (e.button === 0) {
+        this.world.pointer.hold = false;
+        this.syncPointerActive();
+      }
+    });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  /** 由"按键/常驻开关 + 光标是否在画布内 + 当前状态"推出最终是否生效 */
+  private syncPointerActive(): void {
+    const p = this.world.pointer;
+    p.active = (p.hold || p.persistent) && p.inside && this.state === 'run';
+  }
+
+  private releasePointer(): void {
+    const p = this.world.pointer;
+    p.hold = false;
+    p.inside = false;
+    p.active = false;
+  }
+
+  /** 每帧对齐一次（状态机切换、光标进出画布都靠它兜底） */
+  private syncPointerActivePerFrame(): void {
+    const p = this.world.pointer;
+    p.active = (p.hold || p.persistent) && p.inside && this.state === 'run';
+  }
+
+  // ---------- 存档 ----------
   private loadSave(): void {
     try {
       const raw = localStorage.getItem(SAVE_KEY);
@@ -263,6 +362,7 @@ export class Game {
     const ay = (k.has('s') || k.has('ArrowDown') ? 1 : 0) - (k.has('w') || k.has('ArrowUp') ? 1 : 0);
     this.world.input.x = ax;
     this.world.input.y = ay;
+    this.syncPointerActivePerFrame();
 
     if (this.state === 'run') {
       this.acc += dtMs;
@@ -306,6 +406,14 @@ export class Game {
     this.bgTile.height = scr.height;
     this.bgTile.tilePosition.set(scr.width / 2 - w.camX + ox, scr.height / 2 - w.camY + oy);
     this.bgTile.tint = w.mapDef.bgTint;
+
+    // 鼠标准星（M3）：贴在世界坐标上（不受屏震影响的换算已在 world 里完成）；
+    // 可见性由 active 直接决定——渲染自洽，不依赖主循环是否在跑（测试里 ticker 是停的）
+    if (this.reticle) {
+      const on = w.pointer.active;
+      this.reticle.visible = on;
+      if (on) this.reticle.position.set(w.pointer.x, w.pointer.y);
+    }
 
     // 地形障碍（地图 1/2/3 的齿轮与书架）：只同步相机附近区块
     const near = w.obstaclesNear(w.camX, w.camY, this.obstacleScratch);
@@ -581,7 +689,7 @@ export class Game {
         this.ui.toast('静滞潮汐达到峰值——坚持到最后！', 'red');
         break;
       case 'hint-move':
-        this.ui.toast('移动：WASD / 方向键 —— 青色残影会重演你 2.5 秒前的行动', 'cyan');
+        this.ui.toast('移动：WASD / 方向键，或按住鼠标左键朝光标移动 —— 青色残影会重演你 2.5 秒前的行动', 'cyan');
         break;
       case 'revive':
         this.ui.toast('回响护住了你 —— 首局免费复活（GDD §9 新手保底，限 1 次）', 'cyan');
