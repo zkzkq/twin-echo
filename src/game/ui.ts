@@ -26,6 +26,7 @@ export interface UIHandlers {
   closeSetup(): void;
   selectChar(id: string): void;
   selectParadox(lvl: number): void;
+  selectMap(id: string): void;
   startDaily(): void;
 }
 
@@ -39,6 +40,7 @@ export interface SetupView {
   sand: number;
   characters: SetupCharView[];
   paradox: { lvl: number; name: string; desc: string; state: 'selected' | 'owned' | 'locked' }[];
+  maps: { id: string; name: string; desc: string; state: 'selected' | 'owned' | 'locked'; beaten: boolean }[];
   daily: { key: string; modName: string; modDesc: string; charName: string; best: string; cleared: boolean };
 }
 
@@ -77,6 +79,7 @@ export interface ResultData {
   /** M3：本局配置与解锁提示 */
   character: string;
   paradox: number;
+  mapName: string;
   dailyMod: string;
   unlockMsg: string;
   sand: number;
@@ -123,6 +126,7 @@ export class UI {
   private setupChars = $('setupChars');
   private setupParadox = $('setupParadox');
   private setupDaily = $('setupDaily');
+  private setupMaps = $('setupMaps');
   private setupSand = $('setupSand');
   private titleConfig = $('titleConfig');
   private toasts = $('toasts');
@@ -186,6 +190,18 @@ export class UI {
       .join('');
     this.setupParadox.querySelectorAll('.parabtn:not(.locked)').forEach((el) => {
       (el as HTMLElement).onclick = () => this.h.selectParadox(Number((el as HTMLElement).dataset.lvl ?? '0'));
+    });
+    this.setupMaps.innerHTML = v.maps
+      .map(
+        (m) => `<button class="mapcard ${m.state === 'selected' ? 'selected' : ''} ${m.state === 'locked' ? 'locked' : ''}" data-id="${m.id}">
+          <span class="mc-name">${m.name}${m.beaten ? ' ✓' : ''}</span>
+          <span class="mc-desc">${m.desc}</span>
+          <span class="mc-state">${m.state === 'selected' ? '出战中' : m.state === 'locked' ? '未解锁（需通关上一张）' : '已解锁'}</span>
+        </button>`,
+      )
+      .join('');
+    this.setupMaps.querySelectorAll('.mapcard:not(.locked)').forEach((el) => {
+      (el as HTMLElement).onclick = () => this.h.selectMap((el as HTMLElement).dataset.id ?? '');
     });
     this.setupDaily.innerHTML =
       `<div><b>${v.daily.modName}</b> —— ${v.daily.modDesc}</div>` +
@@ -435,6 +451,7 @@ export class UI {
       stat(`${d.elites}`, '精英击杀'),
       stat(`${d.bossKills}/4`, 'Boss 击杀'),
       stat(d.paradox > 0 ? `悖论 ${d.paradox}` : '标准', `角色 ${d.character}`, true),
+      stat(d.mapName, '地图'),
       stat(d.dailyMod || '—', '每日变异'),
       stat(`+${d.sand}`, '时砂（M3 密库）'),
       stat(`${d.totalSand}`, '累计时砂'),

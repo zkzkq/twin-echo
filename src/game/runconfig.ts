@@ -8,6 +8,8 @@ export interface RunOptions {
   character: string;
   paradox: number;
   daily: boolean;
+  /** 地图 id（GDD §6.7；默认时钟平原） */
+  map?: string;
 }
 
 /** 汇总后的局内修正（角色 + 悖论 + 每日；密库增益单独走 world.meta） */
@@ -16,6 +18,8 @@ export interface RunMods {
   characterName: string;
   paradox: number;
   daily: boolean;
+  /** 地图 id（世界按此查 MapDef） */
+  map: string;
   dailyModName: string;
   dailyModDesc: string;
   /** 残影 */
@@ -95,6 +99,7 @@ function fromCharacter(c: CharacterDef, m: RunMods): void {
 export function computeRunMods(opts: RunOptions): RunMods {
   const m: RunMods = {
     character: 'otto', characterName: '', paradox: opts.paradox, daily: opts.daily,
+    map: opts.map ?? 'plain',
     dailyModName: '', dailyModDesc: '',
     echoDelayFrames: BAL.echo.delayFrames,
     echoCoeff: BAL.echo.coeff,

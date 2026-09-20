@@ -251,6 +251,8 @@ try {
     // 给足时砂，解锁「生命 +15」与「共鸣窗口 +0.1s」
     g.saved.sand = 500;
     g.saved.nodes = [];
+    g.runOptions.character = 'otto'; g.runOptions.paradox = 0;
+    g.startRun(); // 先在"无密库"状态开一局取基线（避免受前序机器人随机选卡影响）
     const before = { hp: g.world.player.maxHp, window: g.world.resonanceWindow() };
     g.buyMeta('phase1');
     g.buyMeta('res1');
@@ -336,6 +338,89 @@ try {
     return { challenges: [...g.saved.challenges] };
   })()`);
   check(challenge.challenges.length === 2, '挑战解锁：5min 达 Lv12 / 单局爆发 ≥10', challenge.challenges.join(' + '));
+
+  // 12.9 M3(B)：15:00 双生回响兽 —— 镜像 4 秒前轨迹 + 延迟领域
+  const twin = await cdp.eval(`(() => {
+    const g = __twinEcho, w = g.world;
+    g.saved.nodes = [];
+    g.runOptions.character = 'otto'; g.runOptions.paradox = 0;
+    g.startRun();
+    w.boss = null; w.bossIdx = 2; w.bossWarned = false;   // 下一次到点刷 15:00 的双生回响兽
+    const baseDelay = w.run.echoDelayFrames;
+    w.time = 899.5;
+    for (let i = 0; i < 90 && !(w.boss && w.boss.active); i++) w.update(1/60);
+    const kind = w.boss ? w.boss.bossKind : '';
+    const fieldDelay = w.echoDelayNow();
+    // 玩家沿固定方向走 4 秒，再把 boss 推到"回响刃"状态，检查是否在老位置生成危险区
+    w.input.x = 1; w.input.y = 0;
+    for (let i = 0; i < 300; i++) { w.player.invulnT = 9999; w.update(1/60); }
+    const past = w.playerPosAgo(240);
+    if (w.boss) { w.boss.st = 3; w.boss.stT = 0.01; }
+    for (let i = 0; i < 90; i++) { w.player.invulnT = 9999; w.update(1/60); }
+    const hazards = w.hazards.count;
+    const nearPast = w.hazards.items.some((h) => h.active && Math.hypot(h.x - past.x, h.y - past.y) < 160);
+    return { kind, baseDelay, fieldDelay, hazards, nearPast, bossHp: w.boss ? Math.round(w.boss.hp) : 0 };
+  })()`);
+  check(twin.kind === 'twin', '15:00 双生回响兽按日程生成', `${twin.kind} · HP ${twin.bossHp}`);
+  check(twin.fieldDelay === twin.baseDelay + 120, '延迟领域：残影延迟 +2s（§15 交互矩阵）', `${twin.baseDelay} → ${twin.fieldDelay} 帧`);
+  check(twin.hazards >= 3 && twin.nearPast, '镜像 4 秒前轨迹：在老位置落下刃域', `危险区 ${twin.hazards} 片 · 命中旧路径 ${twin.nearPast}`);
+
+  // 12.95 M3(A)：3 张地图（解锁链 / 障碍阻挡 / 时潮涡流危险区）
+  const maps = await cdp.eval(`(() => {
+    const g = __twinEcho;
+    // ① 解锁链：未通关时钟平原时，图书馆不可选
+    g.saved.mapsBeaten = [];
+    g.runOptions.map = 'plain';
+    g.selectMap('library');
+    const blocked = g.runOptions.map;
+    // 通关时钟平原后解锁
+    g.saved.mapsBeaten = ['plain'];
+    g.selectMap('library');
+    const unlocked = g.runOptions.map;
+    // ② 障碍阻挡：图书馆（每区块 3–5 个）把玩家推向障碍中心，不应穿模
+    g.startRun();
+    let w = g.world;
+    const near = w.obstaclesNear(0, 0, []);
+    const ob = near[0];
+    let minGap = 999;
+    let pushedGap = -999;
+    if (ob) {
+      // 直接把玩家放到障碍中心 → 一帧内应被推到表面之外
+      w.player.x = ob.x;
+      w.player.y = ob.y;
+      w.player.invulnT = 9999;
+      w.update(1/60);
+      pushedGap = Math.hypot(w.player.x - ob.x, w.player.y - ob.y) - ob.r;
+      // 再持续朝中心推进 60 帧，不应穿模
+      for (let i = 0; i < 60; i++) {
+        w.player.invulnT = 9999;
+        const dx = ob.x - w.player.x, dy = ob.y - w.player.y;
+        const d = Math.hypot(dx, dy) || 1;
+        w.input.x = dx / d; w.input.y = dy / d;
+        w.update(1/60);
+        minGap = Math.min(minGap, Math.hypot(w.player.x - ob.x, w.player.y - ob.y) - ob.r);
+      }
+    }
+    const obsCount = near.length;
+    // ③ 时潮涡流：崩坏之环每 12s 在玩家附近生成危险区
+    g.saved.mapsBeaten = ['plain', 'library'];
+    g.selectMap('ring');
+    g.startRun();
+    w = g.world;
+    for (let i = 0; i < 900; i++) { w.player.invulnT = 9999; w.update(1/60); }
+    return {
+      blocked, unlocked,
+      obsCount, minGap: +minGap.toFixed(1), pushedGap: +pushedGap.toFixed(1), playerR: w.player.radius,
+      ringHazards: w.hazards.count, ringId: w.mapDef.id,
+    };
+  })()`);
+  check(maps.blocked === 'plain' && maps.unlocked === 'library', '地图解锁链：通关上一张才开下一张', `拦截后 ${maps.blocked} → 解锁后 ${maps.unlocked}`);
+  check(
+    maps.obsCount > 0 && maps.pushedGap >= maps.playerR - 0.5 && maps.minGap >= maps.playerR - 1,
+    '地形障碍阻挡玩家（推出表面 + 不穿模）',
+    `附近障碍 ${maps.obsCount} 个 · 中心推出至 ${maps.pushedGap}px · 推进中最小间隙 ${maps.minGap}px（玩家半径 ${maps.playerR}）`,
+  );
+  check(maps.ringHazards >= 1 && maps.ringId === 'ring', '崩坏之环：时潮涡流危险区按周期刷新', `15s 内生成 ${maps.ringHazards} 片`);
 
   // 13. 运行时异常
   check(cdp.errors.length === 0, '无未捕获运行时异常', cdp.errors.slice(0, 2).join(' | '));

@@ -104,6 +104,26 @@ export interface Gem {
   sprite: Sprite;
 }
 
+/** 场地危险区（双生回响兽的镜像刃 / 地图危险区 / BOSS 减速带通用） */
+export interface Hazard {
+  idx: number;
+  active: boolean;
+  x: number;
+  y: number;
+  r: number;
+  /** 剩余存活时间 */
+  t: number;
+  /** 预警剩余（>0 时不结算伤害，只显示预警） */
+  tele: number;
+  /** 每秒对玩家造成的伤害（0 = 只减速不掉血） */
+  dps: number;
+  /** 玩家在区内的减速系数（1 = 不减速） */
+  slowFactor: number;
+  kind: 'blade' | 'sand' | 'vortex';
+  color: number;
+  sprite: Sprite;
+}
+
 /** 残光轨迹段（残光轨迹武器） */
 export interface TrailSeg {
   idx: number;

@@ -15,8 +15,10 @@ import { clearAltars, interruptAltars, spawnAltar, updateAltars } from './altar'
 import { eventGaugeMult, eventSpawnMult, rollEvent, updateEvents, type EventKind } from './events';
 import { EMPTY_BONUSES, type MetaBonuses } from './meta';
 import { defaultRunMods, type RunMods } from './runconfig';
+import { mapById, type MapDef } from '../config/maps';
+import { chunkKey, chunkObstacles, chunkOf, type Obstacle } from './terrain';
 import type {
-  Altar, Bullet, Enemy, EchoState, EchoEvent, Gem, OrbitState, Particle, PlayerState, RingFx, RunStats,
+  Altar, Bullet, Enemy, EchoState, EchoEvent, Gem, Hazard, OrbitState, Particle, PlayerState, RingFx, RunStats,
   TrailSeg, WorldFlags,
 } from './types';
 
@@ -89,6 +91,7 @@ export class World {
   readonly parts: Pool<Particle>;
   readonly rings: Pool<RingFx>;
   readonly trails: Pool<TrailSeg>;
+  readonly hazards: Pool<Hazard>;
   readonly hash = new SpatialHash();
 
   /** 进化祭坛（GDD §6.5，最多 3 座） */
@@ -113,6 +116,39 @@ export class World {
   burstHasteT = 0;
   /** 受击时停的内置冷却（诺亚） */
   stasisCd = 0;
+  /** 地图障碍区块缓存（MapDef × 区块 → 障碍，确定性生成） */
+  readonly terrainCache = new Map<string, Obstacle[]>();
+  /** 当前地图危险区刷新计时（崩坏之环的时潮涡流） */
+  private hazardT = 0;
+  /** 障碍查询复用缓冲（零分配） */
+  private obstacleScratch: Obstacle[] = [];
+
+  get mapDef(): MapDef {
+    return mapById(this.run.map);
+  }
+
+  /** 取 (x,y) 周围 3×3 区块内的障碍（带缓存，供碰撞与渲染共用） */
+  obstaclesNear(x: number, y: number, out: Obstacle[] = []): Obstacle[] {
+    out.length = 0;
+    const map = this.mapDef;
+    if (map.obstacles.perChunkMax <= 0) return out;
+    const { cx, cy } = chunkOf(x, y);
+    for (let i = -1; i <= 1; i++) {
+      for (let j = -1; j <= 1; j++) {
+        const gx = cx + i;
+        const gy = cy + j;
+        const key = chunkKey(gx, gy);
+        let list = this.terrainCache.get(key);
+        if (!list) {
+          list = chunkObstacles(map, gx, gy);
+          if (this.terrainCache.size > 256) this.terrainCache.clear();
+          this.terrainCache.set(key, list);
+        }
+        for (const o of list) out.push(o);
+      }
+    }
+    return out;
+  }
 
   boss: Enemy | null = null;
   pendingLevelUps = 0;
@@ -206,6 +242,15 @@ export class World {
       return { idx, active: false, x: 0, y: 0, life: 0, maxLife: 1, src: 'body' as const, sprite };
     }, 140);
 
+    // 危险区：数量少（≤12），按需创建/销毁精灵，不进池预分配
+    this.hazards = new Pool<Hazard>((idx) => {
+      const sprite = hiddenSprite(tex.ring, layers.fx);
+      return {
+        idx, active: false, x: 0, y: 0, r: 60, t: 0, tele: 0, dps: 0, slowFactor: 1,
+        kind: 'blade' as const, color: 0xffffff, sprite,
+      };
+    }, 12);
+
     this.reset(1, true);
   }
 
@@ -221,6 +266,9 @@ export class World {
     this.run = run;
     this.burstHasteT = 0;
     this.stasisCd = 0;
+    this.hazardT = this.mapDef.hazardEvery;
+    this.terrainCache.clear();
+    this.obstacleScratch.length = 0;
 
     this.player = {
       x: 0, y: 0, hp: 100, maxHp: 100, radius: BAL.player.radius, speed: BAL.player.speed,
@@ -266,6 +314,7 @@ export class World {
     this.parts.releaseAll();
     this.rings.releaseAll();
     this.trails.releaseAll();
+    this.hazards.releaseAll();
     clearAltars(this);
     for (const nd of [...this.orbits.body.needles, ...this.orbits.echo.needles]) nd.sprite.destroy();
     this.orbits.body.needles.length = 0;
@@ -382,6 +431,8 @@ export class World {
 
     this.phase('gems', () => updateGems(this, dt));
     this.phase('merge', () => mergePass(this, dt));
+    this.phase('hazards', () => this.updateHazards(dt));
+    this.phase('map', () => this.updateMapHazards(dt));
     this.phase('altars', () => updateAltars(this, dt));
     this.phase('events', () => updateEvents(this, dt));
     this.phase('director', () => this.director(dt));
@@ -421,8 +472,7 @@ export class World {
     }
 
     // 沙流带判定与清理
-    if (this.sandZones.length > 0) {
-      for (let i = this.sandZones.length - 1; i >= 0; i--) {
+    if (this.sandZones.length > 0) {      for (let i = this.sandZones.length - 1; i >= 0; i--) {
         const z = this.sandZones[i]!;
         z.t -= dt;
         if (z.t <= 0) {
@@ -433,6 +483,8 @@ export class World {
       }
     }
     if (p.slowT > 0) p.slowT -= dt;
+    // 地形障碍推挤（地图 1/2/3 的齿轮与书架）
+    this.pushOutObstacles();
 
     // 记录轨迹（环形缓冲）
     e.bx[e.head] = p.x;
@@ -441,8 +493,8 @@ export class World {
     e.head = (e.head + 1) % ECHO_BUF;
     if (e.count < ECHO_BUF) e.count++;
 
-    // 重演位置：延迟 = min(已记录帧数, 本局延迟)；开局不足时贴身跟随
-    const delay = Math.min(e.count, this.run.echoDelayFrames);
+    // 重演位置：延迟 = min(已记录帧数, 本局延迟 + 双生回响兽延迟领域)；开局不足时贴身跟随
+    const delay = Math.min(e.count, this.echoDelayNow());
     const idx = (e.head - delay + ECHO_BUF) % ECHO_BUF;
     e.x = e.bx[idx]!;
     e.y = e.by[idx]!;
@@ -575,7 +627,7 @@ export class World {
       const can = Math.min(n, Math.max(0, cap - this.enemies.count));
       for (let i = 0; i < can; i++) {
         const sp = this.spawnPoint();
-        spawnEnemy(this, pickKind(this.rng, m), sp.x, sp.y);
+        spawnEnemy(this, pickKind(this.rng, m, this.mapDef.weights), sp.x, sp.y);
       }
     }
   }
@@ -789,5 +841,105 @@ export class World {
     t.sprite.tint = src === 'body' ? COLORS.needleBody : COLORS.needleEcho;
     t.sprite.rotation = this.rng.angle();
     t.sprite.visible = true;
+  }
+
+  /**
+   * 生成危险区（GDD §6.6 双生回响兽的镜像刃 / 地图危险区通用）。
+   * tele > 0 时为预警期（只显形不结算伤害），给玩家反应窗口。
+   */
+  spawnHazard(
+    x: number, y: number, r: number, life: number,
+    opts: { tele?: number; dps?: number; slowFactor?: number; kind?: Hazard['kind']; color?: number } = {},
+  ): Hazard {
+    const h = this.hazards.obtain();
+    h.x = x;
+    h.y = y;
+    h.r = r;
+    h.t = life;
+    h.tele = opts.tele ?? 0.6;
+    h.dps = opts.dps ?? 0;
+    h.slowFactor = opts.slowFactor ?? 1;
+    h.kind = opts.kind ?? 'blade';
+    h.color = opts.color ?? COLORS.echo;
+    h.sprite.tint = h.color;
+    h.sprite.visible = true;
+    h.sprite.alpha = 0.5;
+    return h;
+  }
+
+  /** 玩家 frames 帧前的位置（读残影缓冲；双生回响兽的"4 秒前的你"即取 240 帧） */
+  playerPosAgo(frames: number): { x: number; y: number } {
+    const e = this.echo;
+    const f = Math.max(1, Math.min(frames, Math.max(1, e.count)));
+    const idx = (e.head - f + ECHO_BUF) % ECHO_BUF;
+    return { x: e.bx[idx]!, y: e.by[idx]! };
+  }
+
+  /** 当前残影延迟（含 15:00 双生回响兽的"延迟领域" +2s，GDD §15） */
+  echoDelayNow(): number {
+    const twinField = this.boss !== null && this.boss.active && this.boss.bossKind === 'twin';
+    return this.run.echoDelayFrames + (twinField ? 120 : 0);
+  }
+
+  /** 地图危险区刷新（崩坏之环的时潮涡流：停留即受伤 + 减速，GDD §6.7） */
+  private updateMapHazards(dt: number): void {
+    const map = this.mapDef;
+    if (map.hazardEvery <= 0) return;
+    this.hazardT -= dt;
+    if (this.hazardT > 0) return;
+    this.hazardT = map.hazardEvery;
+    const h = map.hazard;
+    const n = 1 + (this.rng.next() < 0.4 ? 1 : 0);
+    for (let i = 0; i < n; i++) {
+      const a = this.rng.angle();
+      const d = this.rng.range(140, 460);
+      this.spawnHazard(
+        this.player.x + Math.cos(a) * d,
+        this.player.y + Math.sin(a) * d,
+        h.r, h.life,
+        { tele: h.tele, dps: h.dps, slowFactor: h.slowFactor, kind: 'vortex', color: h.color },
+      );
+    }
+  }
+
+  /** 障碍推挤（只推玩家；GDD：齿轮障碍阻挡移动、不阻挡弹道） */
+  private pushOutObstacles(): void {
+    const map = this.mapDef;
+    if (map.obstacles.perChunkMax <= 0) return;
+    const p = this.player;
+    const list = this.obstaclesNear(p.x, p.y, this.obstacleScratch);
+    for (const o of list) {
+      const dx = p.x - o.x;
+      const dy = p.y - o.y;
+      const rr = o.r + p.radius;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= rr * rr) continue;
+      const d = Math.sqrt(d2) || 1;
+      p.x = o.x + (dx / d) * rr;
+      p.y = o.y + (dy / d) * rr;
+    }
+  }
+
+  /** 危险区结算：预警结束后的伤害与减速 */
+  private updateHazards(dt: number): void {    const p = this.player;
+    for (const h of this.hazards.items) {
+      if (!h.active) continue;
+      h.t -= dt;
+      if (h.t <= 0) {
+        this.hazards.release(h);
+        h.sprite.visible = false;
+        continue;
+      }
+      if (h.tele > 0) {
+        h.tele -= dt;
+        continue;
+      }
+      const d2 = (p.x - h.x) ** 2 + (p.y - h.y) ** 2;
+      if (d2 <= h.r * h.r) {
+        if (h.slowFactor < 1) p.slowT = 0.2;
+        // 受击宽限会吞掉同帧重复伤害：每次调用按 dps × 宽限 结算，实际承伤即 dps/秒
+        if (h.dps > 0) this.damagePlayer(h.dps * BAL.player.hurtGrace);
+      }
+    }
   }
 }

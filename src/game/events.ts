@@ -11,7 +11,20 @@ export type EventKind = 'tide' | 'spring' | 'stasis';
  */
 export function rollEvent(w: World): void {
   const list = BAL.events.list;
-  const kind = list[w.rng.int(0, list.length - 1)] as EventKind;
+  // 地图事件池偏重（GDD §6.7：各图事件池偏重）
+  const bias = w.mapDef.eventBias;
+  const weights = list.map((k) => bias[k as EventKind] ?? 1);
+  const total = weights.reduce((p, c) => p + c, 0);
+  let r = w.rng.next() * total;
+  let idx = 0;
+  for (let i = 0; i < list.length; i++) {
+    r -= weights[i]!;
+    if (r <= 0) {
+      idx = i;
+      break;
+    }
+  }
+  const kind = list[idx] as EventKind;
   w.eventKind = kind;
   w.stats.eventsFired++;
   w.onEvent('event-start');

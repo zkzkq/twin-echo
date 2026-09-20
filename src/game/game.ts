@@ -1,4 +1,4 @@
-import { Application, Container, TilingSprite } from 'pixi.js';
+import { Application, Container, Sprite, TilingSprite } from 'pixi.js';
 import { BAL } from '../config/balance';
 import { AudioSys } from '../core/audio';
 import { Telemetry } from '../core/telemetry';
@@ -13,6 +13,8 @@ import { computeRunMods, type RunOptions } from './runconfig';
 import { CHARACTERS, characterById } from '../config/characters';
 import { PARADOX, paradoxSandMult } from '../config/paradox';
 import { DAILY_FIRST_CLEAR_SAND, dailyCharacterId, dailyKey, dailySeed, dailyMod } from '../config/daily';
+import { MAPS, mapById, mapUnlocked } from '../config/maps';
+import type { Obstacle } from './terrain';
 import { META_BRANCHES, META_NODES, metaCost, metaPrereq } from '../config/meta';
 import type { EvolutionDef } from '../config/items';
 
@@ -35,6 +37,8 @@ interface SaveData {
   /** M3：每日挑战记录（日期键 → 最佳成绩）与已领奖日期 */
   dailyBest: Record<string, { time: number; kills: number; level: number }>;
   dailyCleared: string[];
+  /** M3：已通关的地图 id（地图解锁链：通关第 i 张 → 解锁第 i+1 张） */
+  mapsBeaten: string[];
 }
 
 interface DailyRecord {
@@ -86,10 +90,13 @@ export class Game {
 
   private saved: SaveData = {
     sand: 0, runs: 0, bestTime: 0, bestWin: false, firstRun: true, nodes: [],
-    chars: [], challenges: [], bestParadox: 0, dailyBest: {}, dailyCleared: [],
+    chars: [], challenges: [], bestParadox: 0, dailyBest: {}, dailyCleared: [], mapsBeaten: [],
   };
-  /** M3：本局配置（角色 / 悖论 / 是否每日挑战） */
-  private runOptions: RunOptions = { character: 'otto', paradox: 0, daily: false };
+  /** M3：本局配置（角色 / 悖论 / 地图 / 是否每日挑战） */
+  private runOptions: RunOptions = { character: 'otto', paradox: 0, daily: false, map: 'plain' };
+  /** 障碍渲染精灵池 */
+  private readonly obstacleSprites: Sprite[] = [];
+  private obstacleScratch: Obstacle[] = [];
 
   async init(): Promise<void> {
     await this.app.init({
@@ -109,6 +116,15 @@ export class Game {
     this.app.stage.addChild(this.bgTile);
     this.worldC.addChild(this.gemC, this.enemyC, this.bulletC, this.playerC, this.fxC);
     this.app.stage.addChild(this.worldC);
+    // 地形障碍精灵池（随相机附近区块动态绑定）
+    for (let i = 0; i < 64; i++) {
+      const s = new Sprite(this.tex.ring);
+      s.anchor.set(0.5);
+      s.visible = false;
+      s.alpha = 0.9;
+      this.gemC.addChild(s);
+      this.obstacleSprites.push(s);
+    }
 
     this.ui = new UI({
       start: () => this.startRun(),
@@ -132,6 +148,7 @@ export class Game {
       closeSetup: () => this.closeSetup(),
       selectChar: (id) => this.selectChar(id),
       selectParadox: (lvl) => this.selectParadox(lvl),
+      selectMap: (id) => this.selectMap(id),
       startDaily: () => this.startDaily(),
     });
 
@@ -276,6 +293,22 @@ export class Game {
     this.bgTile.width = scr.width;
     this.bgTile.height = scr.height;
     this.bgTile.tilePosition.set(scr.width / 2 - w.camX + ox, scr.height / 2 - w.camY + oy);
+    this.bgTile.tint = w.mapDef.bgTint;
+
+    // 地形障碍（地图 1/2/3 的齿轮与书架）：只同步相机附近区块
+    const near = w.obstaclesNear(w.camX, w.camY, this.obstacleScratch);
+    for (let i = 0; i < this.obstacleSprites.length; i++) {
+      const s = this.obstacleSprites[i]!;
+      const o: Obstacle | undefined = near[i];
+      if (!o) {
+        if (s.visible) s.visible = false;
+        continue;
+      }
+      s.visible = true;
+      s.position.set(o.x, o.y);
+      s.scale.set(o.r / 40);
+      s.tint = o.tint;
+    }
 
     // 玩家 / 残影 / 拖尾
     const p = w.player;
@@ -409,6 +442,21 @@ export class Game {
       s.alpha = (1 - k) * 0.9;
     }
 
+    // 危险区（双生回响兽镜像刃 / 地图危险区）：预警期闪烁，生效期呼吸
+    for (const h of w.hazards.items) {
+      const s = h.sprite;
+      if (!h.active) {
+        if (s.visible) s.visible = false;
+        continue;
+      }
+      s.visible = true;
+      s.position.set(h.x, h.y);
+      s.scale.set(h.r / 40);
+      s.alpha = h.tele > 0
+        ? 0.25 + 0.22 * Math.sin(this.frameCount * 0.55)
+        : 0.5 + 0.18 * Math.sin(this.frameCount * 0.2);
+    }
+
     // 受击闪屏
     if (this.state === 'run' && p.hp < this.prevHp - 0.01) this.ui.flashHurt();
     this.prevHp = p.hp;
@@ -454,10 +502,15 @@ export class Game {
         this.ui.toast('⚠ 时空裂隙震动——强敌即将袭来', 'red');
         this.audio.warn();
         break;
-      case 'boss-spawn':
+      case 'boss-spawn': {
         this.ui.toast(`${this.bossName()} 现身！`, 'red');
+        // 双生回响兽：主动提示它的机制，否则玩家不会理解"为什么要错位"
+        if (this.world.boss?.bossKind === 'twin') {
+          this.ui.toast('延迟领域：你的残影延迟 +2s —— 它会沿你 4 秒前的走法攻击，别站在自己走过的路上', 'red');
+        }
         this.telemetry.log(this.world.time, 'boss_spawn', { boss: this.bossName() });
         break;
+      }
       case 'boss-dead':
         this.ui.toast(`${this.bossName() || 'Boss'} 已被抹除——掉落回响结晶 ×2`, 'cyan');
         break;
@@ -622,6 +675,14 @@ export class Game {
         best: rec ? `${fmtTime(rec.time)} · 击杀 ${rec.kills} · Lv${rec.level}` : '暂无记录',
         cleared: this.saved.dailyCleared.includes(key),
       },
+      maps: MAPS.map((m) => {
+        const unlocked = mapUnlocked(m.id, this.saved.mapsBeaten);
+        return {
+          id: m.id, name: m.name, desc: m.desc,
+          state: this.runOptions.map === m.id ? 'selected' : unlocked ? 'owned' : 'locked',
+          beaten: this.saved.mapsBeaten.includes(m.id),
+        };
+      }),
     };
   }
 
@@ -677,6 +738,17 @@ export class Game {
       return;
     }
     this.runOptions.paradox = lvl;
+    this.ui.showSetup(this.setupView());
+  }
+
+  /** 选择地图（解锁链：通关上一张才开下一张） */
+  selectMap(id: string): void {
+    if (!mapUnlocked(id, this.saved.mapsBeaten)) {
+      const idx = MAPS.findIndex((m) => m.id === id);
+      this.ui.toast(`「${mapById(id).name}」未解锁：需先通关「${MAPS[idx - 1]?.name ?? '上一张地图'}」`);
+      return;
+    }
+    this.runOptions.map = id;
     this.ui.showSetup(this.setupView());
   }
 
@@ -780,6 +852,7 @@ export class Game {
     if (daily) {
       this.runOptions.character = dailyCharacterId(key, CHARACTERS.map((c) => c.id));
       this.runOptions.paradox = 0;
+      this.runOptions.map = 'plain'; // 每日固定地图，保证榜单可比
     }
     const mods = computeRunMods(this.runOptions);
     this.world.reset(this.seed, this.saved.firstRun, computeBonuses(this.saved.nodes), mods);
@@ -885,11 +958,18 @@ export class Game {
     if (w.time > this.saved.bestTime) this.saved.bestTime = w.time;
     if (win) this.saved.bestWin = true;
 
-    // M3：悖论解锁（在 N 级获胜 → 解锁 N+1）与挑战解锁
+    // M3：悖论解锁（在 N 级获胜 → 解锁 N+1）与地图解锁链
     let paradoxUnlocked = false;
     if (win && w.run.paradox >= this.saved.bestParadox) {
       this.saved.bestParadox = Math.min(5, w.run.paradox + 1);
       paradoxUnlocked = true;
+    }
+    let mapMsg = '';
+    if (win && !this.saved.mapsBeaten.includes(w.run.map)) {
+      this.saved.mapsBeaten.push(w.run.map);
+      const idx = MAPS.findIndex((m) => m.id === w.run.map);
+      const next = MAPS[idx + 1];
+      mapMsg = next ? `地图「${next.name}」已解锁` : '全部地图已通关';
     }
     const challengeMsg = this.checkChallenges(win);
 
@@ -966,8 +1046,9 @@ export class Game {
         .join('、'),
       character: characterById(w.run.character).name,
       paradox: w.run.paradox,
+      mapName: mapById(w.run.map).name,
       dailyMod: this.runIsDaily ? w.run.dailyModName : '',
-      unlockMsg: [challengeMsg, paradoxUnlocked ? `悖论 ${this.saved.bestParadox} 已解锁` : '', dailyMsg]
+      unlockMsg: [challengeMsg, paradoxUnlocked ? `悖论 ${this.saved.bestParadox} 已解锁` : '', mapMsg, dailyMsg]
         .filter(Boolean)
         .join(' · '),
       sand,

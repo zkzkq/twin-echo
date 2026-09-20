@@ -22,15 +22,20 @@ const TEXTURE_KEY: Record<EnemyKind, 'moth' | 'idol' | 'hopper' | 'cultist' | 'b
 };
 
 /**
- * 敌人混编权重（GDD §6.6 未规定权重，此处按"平均 HP 贴近基础曲线"标定：
- * 蚀刻像 HP₀=55 属阻塞型，占比压低到 12%，避免平均 HP 被坦克拉高、击杀节拍塌陷）。
+ * 敌人混编权重（GDD §6.6 未规定权重）。
+ * 2.5 分钟前以时蛾为主（教学期）；之后使用**地图权重**（GDD §6.7 各图敌性倾向）。
  */
-export function pickKind(rng: RNG, m: number): EnemyKind {
+export function pickKind(rng: RNG, m: number, weights?: { moth: number; hopper: number; idol: number; cultist: number }): EnemyKind {
   const r = rng.next();
   if (m < 2.5) return 'moth';
-  if (m < 4) return r < 0.65 ? 'moth' : 'hopper';
-  if (m < 6) return r < 0.55 ? 'moth' : r < 0.85 ? 'hopper' : 'idol';
-  return r < 0.5 ? 'moth' : r < 0.75 ? 'hopper' : r < 0.87 ? 'idol' : 'cultist';
+  const w = weights ?? { moth: 0.5, hopper: 0.25, idol: 0.12, cultist: 0.13 };
+  let acc = w.moth;
+  if (r < acc) return 'moth';
+  acc += w.hopper;
+  if (r < acc) return 'hopper';
+  acc += w.idol;
+  if (r < acc) return 'idol';
+  return 'cultist';
 }
 
 export function spawnEnemy(w: World, kind: EnemyKind, x: number, y: number, elite = false, bossKind: BossKind | '' = ''): Enemy {
@@ -247,11 +252,92 @@ export function updateEnemies(w: World, dt: number): void {
 
 /** Boss 技能分发（GDD §6.6）。minute=分针兽；hourglass=时漏巨像；twin/weaver 为 M3 占位（复用巨像行为） */
 function updateBoss(w: World, e: Enemy, dt: number, nx: number, ny: number, slow: number): void {
-  if (e.bossKind === 'hourglass' || e.bossKind === 'twin' || e.bossKind === 'weaver') {
+  if (e.bossKind === 'hourglass') {
     updateHourglass(w, e, dt, nx, ny, slow);
     return;
   }
+  if (e.bossKind === 'twin') {
+    updateTwin(w, e, dt, nx, ny, slow);
+    return;
+  }
+  if (e.bossKind === 'weaver') {
+    updateHourglass(w, e, dt, nx, ny, slow); // 20:00 诺诺：M3 后半实装三阶段，暂用巨像行为
+    return;
+  }
   updateMinute(w, e, dt, nx, ny, slow);
+}
+
+/**
+ * Boss 双生回响兽（15:00）：**镜像玩家 4 秒前的轨迹**发起攻击（GDD §6.6）。
+ * 三个机制都直接读取玩家的回响缓冲（240 帧 = 4s），主题与机制同构：
+ *   ① 延迟领域（被动）：本局残影延迟 +2s（§15 交互矩阵）——在你身边，连"过去的你"都变得更远；
+ *   ② 镜像突进：预警后朝"4 秒前的你"冲锋——站在原地不动就会被打中；
+ *   ③ 回响刃：在 4s / 3s / 2s 前的位置依次落下三片刃域，封锁你走过的路。
+ * 破解方式即"主动错位自己 4 秒前的走法"——玩家的应对就是设计意图。
+ */
+function updateTwin(w: World, e: Enemy, dt: number, nx: number, ny: number, slow: number): void {
+  e.stT -= dt;
+  e.tele = false;
+  e.sprite.rotation += dt * 0.6;
+  switch (e.st) {
+    case 0: // 追击
+      e.x += nx * e.speed * slow * dt;
+      e.y += ny * e.speed * slow * dt;
+      if (e.stT <= 0) {
+        if (e.pat === 0) {
+          e.st = 1;
+          e.stT = 0.6;
+        } else {
+          e.st = 3;
+          e.stT = 0.5;
+        }
+      }
+      break;
+    case 1: // 镜像突进：前摇（锁定"4 秒前的你"，用残影拖尾提示读者）
+      e.tele = true;
+      if (e.stT <= 0) {
+        const past = w.playerPosAgo(240);
+        const dx = past.x - e.x;
+        const dy = past.y - e.y;
+        const d = Math.hypot(dx, dy) || 1;
+        e.ax = dx / d;
+        e.ay = dy / d;
+        e.st = 2;
+        e.stT = Math.max(0.45, Math.min(1.1, d / 620));
+        w.spawnRing(past.x, past.y, 20, 90, 0.5, 0xff8a70, 0.9); // 标出"你 4 秒前站的位置"
+      }
+      break;
+    case 2: // 镜像突进：冲锋（超速）
+      e.x += e.ax * 620 * slow * dt;
+      e.y += e.ay * 620 * slow * dt;
+      if (e.stT <= 0) {
+        e.st = 0;
+        e.stT = 1.8;
+        e.pat = 1;
+      }
+      break;
+    case 3: // 回响刃：前摇
+      e.tele = true;
+      if (e.stT <= 0) {
+        e.st = 4;
+        e.stT = 0;
+      }
+      break;
+    case 4: {
+      // 在 4s / 3s / 2s 前的位置依次落下刃域（预警 0.7s，伤害 26/s，持续 2.2s）
+      const marks: [number, number][] = [[240, 0], [180, 0.35], [120, 0.7]];
+      for (const [frames, delayExtra] of marks) {
+        const past = w.playerPosAgo(frames);
+        w.spawnHazard(past.x, past.y, 70, 2.2 + delayExtra, {
+          tele: 0.7 + delayExtra, dps: 26, kind: 'blade', color: 0xff8a70,
+        });
+      }
+      e.st = 0;
+      e.stT = 2.0;
+      e.pat = 0;
+      break;
+    }
+  }
 }
 
 /** Boss 分针兽：环形弹幕 + 扇形冲锋（GDD §6.6） */
