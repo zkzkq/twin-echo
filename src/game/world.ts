@@ -116,6 +116,13 @@ export class World {
   syncStreak = 0;
   /** 图鉴（M3）：本局按种类击杀统计（局末合并进存档） */
   codex = new Map<string, number>();
+  /**
+   * 作弊状态（M3）：`godMode` 免伤、`cheatNoFog` 无视视野遮蔽、`cheated` 本局用过作弊码。
+   * `cheated` 是**隔离标记**：作弊局不计成就、不更新历史最佳、不进验收统计的中位样本（见 game.endRun）。
+   */
+  godMode = false;
+  cheatNoFog = false;
+  cheated = false;
   /** 沙流减速带（时漏巨像 §6.6）：玩家踏入减速 30% */
   sandZones: { x: number; y: number; r: number; t: number }[] = [];
   /** 残光轨迹留痕计时（本体/残影各一） */
@@ -142,9 +149,9 @@ export class World {
     return mapById(this.run.map);
   }
 
-  /** 视野半径（0 = 无遮蔽）——由地图决定，见 GDD §6.7「静止图书馆」 */
+  /** 视野半径（0 = 无遮蔽）——由地图决定，见 GDD §6.7「静止图书馆」；作弊码 NOFOG 可临时关闭 */
   visionR(): number {
-    return this.mapDef.visionR;
+    return this.cheatNoFog ? 0 : this.mapDef.visionR;
   }
 
   /**
@@ -411,6 +418,10 @@ export class World {
     this.evoDmgBonus = 0;
     this.syncStreak = 0;
     this.codex.clear();
+    // 作弊状态：每局重置（免伤/无视视野不跨局，cheated 标记也归零）
+    this.godMode = false;
+    this.cheatNoFog = false;
+    this.cheated = false;
     this.sandZones.length = 0;
     this.trailTimer = { body: 0, echo: Math.PI / 4 };
     this.profFrames.length = 0;
@@ -754,6 +765,7 @@ export class World {
   damagePlayer(dmg: number): void {
     const p = this.player;
     if (!this.running || p.invulnT > 0 || p.hurtCd > 0) return;
+    if (this.godMode) return; // 作弊码 GOD：免伤（连受击特效都不出，便于观察战场）
     // 回响同步护体（M3）：编队 ramp 越高，受到的伤害越低（最高 -25%）——"贴住残影"同时是攻与守
     dmg *= 1 - BAL.resonance.syncDefMax * this.syncRamp();
     // 被动「甲壳」+ 密库「甲壳/时相终章」（M3）：固定减伤

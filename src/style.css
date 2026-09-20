@@ -116,6 +116,22 @@ html, body {
 /* 诺诺的「静止织机」领域警告：站在紫圈内时闪红 */
 #domaintext { color: #c9a2ff; font-weight: 700; }
 #domaintext.inDomain { color: #ff8ad0; text-shadow: 0 0 10px rgba(154, 107, 255, 0.8); animation: syncpulse 0.6s ease-in-out infinite; }
+/* ---------- 作弊码（M3） ---------- */
+.cheatbadge { color: #ff9f43; font-weight: 700; letter-spacing: 1px; }
+.cheatbadge:empty { display: none; }
+.cheatbox { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.cheatlabel { font-size: 12px; color: var(--dim); letter-spacing: 2px; }
+.cheatinput {
+  flex: 1; min-width: 220px; background: rgba(0, 0, 0, 0.55); border: 1px solid var(--line);
+  border-radius: 3px; color: var(--text); font-family: Consolas, monospace; font-size: 13px;
+  letter-spacing: 1px; padding: 7px 10px; text-transform: uppercase;
+}
+.cheatinput:focus { outline: none; border-color: rgba(255, 210, 62, 0.6); }
+.cheatresult {
+  margin: 8px 0 0; padding: 0; font-family: Consolas, monospace; font-size: 12px;
+  color: var(--cyan-b); white-space: pre-wrap; max-height: 24vh; overflow-y: auto; text-align: left;
+}
+.cheatresult.bad { color: #ffb0a0; }
 .slotrow { display: flex; gap: 5px; }
 .slot {
   width: 36px; height: 36px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.5);

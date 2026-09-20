@@ -107,12 +107,17 @@ try {
     const e = w.enemies.items.find((x) => x.active && !x.boss);
     if (!e) return { error: 'no enemy' };
     e.hp = 1e9; e.speed = 0; e.dmg = 0;
+    // 清场：只留这一只。否则其它敌人也可能先凑成共鸣，把 resHits 抬高 → 循环立即退出 → 偶发 0 夹击
+    // （这个断言曾因此随机失败；残影/本体的指针环半径 90，别的敌人就贴在环上）
+    const solo = () => { for (const o of w.enemies.items) if (o.active && o !== e) w.enemies.release(o); };
+    solo();
     const PX = w.player.x, PY = w.player.y;
     // 阶段 1：残影拉到 600px 外（不同步），敌人在本体指针环上 → 本体标记（来源=左侧）
     for (let i = 0; i < 400 && e.lastHitSrc !== 'body'; i++) {
       w.player.x = PX; w.player.y = PY;
       writeEcho(PX + 600, PY);
       e.x = PX + 90; e.y = PY; e.orbitCdB = 0; e.orbitCdE = 999;
+      solo();
       w.update(1/60);
     }
     const marked = e.lastHitSrc;
@@ -123,6 +128,7 @@ try {
       w.player.x = PX; w.player.y = PY;
       writeEcho(PX + 180, PY);
       e.x = PX + 90; e.y = PY; e.orbitCdB = 0; e.orbitCdE = 0;
+      solo();
       w.update(1/60);
     }
     return {
@@ -146,6 +152,11 @@ try {
       E.bx[at] = x; E.by[at] = y;
     };
     const far = () => { const dx = w.player.x - w.echo.x, dy = w.player.y - w.echo.y; return dx*dx+dy*dy > 400*400; };
+    // 上一段（夹击）把场上清空了 → 先跑几秒让导演补够 2 只（最多 10s）
+    for (let i = 0; i < 600 && w.enemies.items.filter((x) => x.active && !x.boss).length < 2; i++) {
+      w.player.invulnT = 9999;
+      w.update(1/60);
+    }
     const enemies = w.enemies.items.filter((x) => x.active && !x.boss);
     if (enemies.length < 2) return { error: 'need 2 enemies', n: enemies.length };
     const [eA, eB] = enemies;
@@ -820,6 +831,154 @@ try {
     `最佳 Lv${achv.bestLevel} · 共鸣 ${achv.bestRes}`,
   );
   check(achv.rows === achv.total && achv.got === achv.savedCount && achv.panelState === 'codex', '成就面板渲染（已解锁/未解锁 + 进度）', `${achv.got}/${achv.rows} 已解锁 · 「${achv.progress}」`);
+
+  // 12.15 M3：作弊码（每条效果 + 归一化 + 不可重复 + 隔离保证）
+  const cheat = await cdp.eval(`(() => {
+    const g = __twinEcho, w = g.world;
+    const C = window.__cheats;
+    const out = { table: C.CHEATS.length, unique: new Set(C.CHEATS.map((c) => c.code)).size };
+    // 归一化：大小写 / 空格 / 连字符都不敏感
+    out.norm = ['heal', 'Heal', ' HEAL ', 'h-e_a l'].map((s) => !!C.findCheat(s));
+    out.normUnknown = C.findCheat('NOT-A-CODE');
+    // 未知码
+    g.runOptions.character = 'otto'; g.runOptions.paradox = 0;
+    g.startRun();
+    const p = w.player;
+    const bad = g.inputCheat('NOT-A-CODE');
+    out.badOk = bad.ok;
+    // HEAL
+    p.hp = 1; p.invulnT = 0;
+    g.inputCheat('heal');
+    out.heal = { hp: p.hp, max: p.maxHp, invuln: p.invulnT > 2 };
+    // GOD：免伤
+    g.inputCheat('god');
+    const hp0 = p.hp;
+    p.hurtCd = 0; p.invulnT = 0;
+    w.damagePlayer(50);
+    out.godNoDamage = p.hp === hp0;
+    g.inputCheat('god'); // 关闭
+    p.hurtCd = 0; p.invulnT = 0;
+    w.damagePlayer(10);
+    out.godOffDamage = p.hp < hp0;
+    // MAXWEAPON / ALLWEAPON / MAXPASSIVE
+    w.player.weapons.clear();
+    w.player.weapons.set('clock', { lv: 1, cd: 0 });
+    g.inputCheat('MAXW');
+    out.maxWeapon = [...p.weapons.values()].every((s) => s.lv === 6);
+    g.inputCheat('allweapon');
+    out.allWeapon = p.weapons.size;
+    out.allWeaponMaxed = [...p.weapons.values()].every((s) => s.lv === 6);
+    g.inputCheat('maxp');
+    out.allPassive = p.passives.size;
+    out.passiveStatOk = Math.abs(p.stats.dmg - 0.4) < 1e-6; // 力量 5 级 = +40%
+    // EVOLVE
+    g.inputCheat('evolve');
+    out.evolutions = p.evolutions.size;
+    // GAUGE / FREEZE / KILLALL
+    // GAUGE / FREEZE / KILLALL：先等到场上有敌人（首波可能在 1 分钟时才来），最多 70s
+    for (let i = 0; i < 4200 && w.enemies.items.filter((e) => e.active && !e.boss).length < 3; i++) {
+      p.invulnT = 9999;
+      w.update(1/60);
+    }
+    p.gauge = 0;
+    g.inputCheat('gauge');
+    out.gauge = p.gauge;
+    // GAUGE / FREEZE / KILLALL
+    for (let i = 0; i < 240; i++) { p.invulnT = 9999; w.update(1/60); }
+    const before = w.enemies.items.filter((e) => e.active).length;
+    g.inputCheat('freeze');
+    out.frozen = w.enemies.items.filter((e) => e.active && e.frozenT >= 7).length;
+    const kills0 = w.stats.kills;
+    g.inputCheat('killall');
+    out.killallDelta = w.stats.kills - kills0;
+    out.killallLeft = w.enemies.items.filter((e) => e.active && !e.boss).length;
+    out.beforeFreeze = before;
+    // LEVELUP
+    const lv0 = p.level;
+    g.inputCheat('LEVELUP');
+    out.levelDelta = p.level - lv0;
+    // NOFOG：仅在图书馆有意义，这里只验证开关
+    g.inputCheat('nofog');
+    const nofogOn = w.cheatNoFog;
+    g.inputCheat('nofog');
+    out.nofogToggle = nofogOn && !w.cheatNoFog;
+    // BOSS / WEAVER
+    g.inputCheat('weaver');
+    out.weaver = w.boss ? w.boss.bossKind : '';
+    out.weaverHp = w.boss ? Math.round(w.boss.maxHp) : 0;
+    // SANDBAG / METAFULL
+    const sand0 = g.saved.sand;
+    g.inputCheat('sandbag');
+    out.sandDelta = g.saved.sand - sand0;
+    g.inputCheat('metafull');
+    out.metaNodes = g.saved.nodes.length;
+    // 不可重复：sandbag 第二次数值不再增长
+    const sand1 = g.saved.sand;
+    const again = g.inputCheat('sandbag');
+    out.repeatBlocked = !again.ok && g.saved.sand === sand1;
+    // HELP 文案
+    const help = C.findCheat('?');
+    out.helpHasAll = help && C.CHEATS.every((c) => help.apply ? true : true);
+    g.inputCheat('help');
+    out.helpLen = document.getElementById('cheatResult').textContent.length;
+    // 作弊标记 + 标记后的隔离字段
+    out.cheated = w.cheated;
+    out.badge = document.getElementById('cheattext').textContent;
+    g.render(1/60);
+    out.badgeAfterRender = document.getElementById('cheattext').textContent;
+    return out;
+  })()`);
+  check(cheat.table >= 15 && cheat.unique === cheat.table, '作弊码表：≥15 条且主码唯一', `${cheat.table} 条`);
+  check(cheat.norm.every(Boolean) && cheat.normUnknown === null && cheat.badOk === false, '输入归一化（大小写/空格/连字符）与未知码拦截');
+  check(cheat.heal.hp === cheat.heal.max && cheat.heal.invuln === true, 'HEAL：血量回满 + 无敌', `HP ${cheat.heal.hp}/${cheat.heal.max}`);
+  check(cheat.godNoDamage === true && cheat.godOffDamage === true, 'GOD：免伤开关（开=不掉血 / 关=照常掉血）');
+  check(cheat.maxWeapon === true && cheat.allWeapon === 12 && cheat.allWeaponMaxed === true, 'MAXWEAPON / ALLWEAPON：武器满级（12 把全 Lv6）', `${cheat.allWeapon} 把`);
+  check(cheat.allPassive === 15 && cheat.passiveStatOk === true, 'MAXPASSIVE：15 项被动 Lv5 且派生属性已重算');
+  check(cheat.evolutions === 6, 'EVOLVE：一次拿到 6 件进化体', `${cheat.evolutions} 件`);
+  check(cheat.gauge === 100 && cheat.frozen > 0 && cheat.killallDelta > 0 && cheat.killallLeft === 0, 'GAUGE / FREEZE / KILLALL：共鸣充满 / 全场定身 / 清屏', `定身 ${cheat.frozen} · 清屏 ${cheat.killallDelta}（同屏原 ${cheat.beforeFreeze}）`);
+  check(cheat.levelDelta === 10 && cheat.nofogToggle === true, 'LEVELUP / NOFOG：+10 级 / 视野遮蔽开关');
+  check(cheat.weaver === 'weaver' && cheat.weaverHp === 58000, 'BOSS / WEAVER：按需召唤 Boss（终 Boss 58,000 HP）', `${cheat.weaver} · ${cheat.weaverHp}`);
+  check(cheat.sandDelta === 99999 && cheat.metaNodes === 42, 'SANDBAG / METAFULL：时砂 +99999 / 密库 42 节点全开', `时砂 +${cheat.sandDelta} · 节点 ${cheat.metaNodes}`);
+  check(cheat.repeatBlocked === true, '不可重复的码（SANDBAG）本局第二次被拦下');
+  check(cheat.helpLen > 300, 'HELP：列出全部作弊码到面板', `${cheat.helpLen} 字符`);
+  check(cheat.cheated === true && cheat.badgeAfterRender.includes('作弊'), '作弊局标记（HUD 常驻显示）', cheat.badgeAfterRender);
+
+  // 12.16 M3：作弊局隔离——不计成就、不更新历史最佳、不进验收中位样本、遥测带标记
+  const cheatIso = await cdp.eval(`(() => {
+    const g = __twinEcho, w = g.world, D = window.__diag;
+    g.saved.achievements = {};
+    g.saved.runBest = { level: 0, kills: 0, resHits: 0, pincerHits: 0, syncMaxStreak: 0, evolutions: 0, elitesKilled: 0, bossKills: 0, weapons: 0, passives: 0 };
+    D.clear();
+    D.noteRun(1200, 1, false);        // 一局干净样本（20min）
+    g.runOptions.paradox = 0;
+    g.startRun();
+    g.inputCheat('god');              // 本局标记为作弊
+    Object.assign(w.stats, { kills: 9999, resHits: 999, pincerHits: 99, syncMaxStreak: 30, bossKills: 4, elitesKilled: 30 });
+    w.player.level = 60;
+    w.time = 1199.99;
+    w.update(1/60);                   // 胜利结算 → endRun
+    const runs = g.telemetry.runs;
+    const last = runs[runs.length - 1];
+    const report = D.report(runs.length, {});
+    return {
+      state: g.state,
+      cheatedFlag: last ? last.cheated : null,
+      achievements: Object.keys(g.saved.achievements).length,
+      bestLevel: g.saved.runBest.level,
+      bestKills: g.saved.runBest.kills,
+      median: D.medianRunSeconds(),
+      samples: D.state.runSeconds.length,
+      cheatedRuns: D.state.cheatedRuns,
+      reportMentions: report.includes('排除 1 局作弊'),
+    };
+  })()`);
+  check(cheatIso.cheatedFlag === true, '作弊局在遥测里带 cheated 标记', `cheated=${cheatIso.cheatedFlag}`);
+  check(cheatIso.achievements === 0 && cheatIso.bestLevel === 0 && cheatIso.bestKills === 0, '作弊局不计成就、不更新历史最佳', `成就 ${cheatIso.achievements} 条 · 最佳 Lv${cheatIso.bestLevel}`);
+  check(
+    cheatIso.samples === 1 && cheatIso.median === 1200 && cheatIso.cheatedRuns === 1 && cheatIso.reportMentions === true,
+    '作弊局不进验收中位样本，报告里明确标注排除',
+    `样本 ${cheatIso.samples} 局 · 中位 ${cheatIso.median}s · 排除 ${cheatIso.cheatedRuns} 局`,
+  );
 
   // 12.8 M3：角色特性 / 悖论难度 / 每日挑战 / 挑战解锁
   const m3 = await cdp.eval(`(() => {

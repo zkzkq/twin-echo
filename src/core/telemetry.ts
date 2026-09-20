@@ -45,6 +45,8 @@ export interface RunSummary {
   syncTime: number;
   syncPct: number;
   syncMaxStreak: number;
+  /** M3：本局是否用过作弊码（作弊局不计成就、不进验收统计的中位样本） */
+  cheated: boolean;
   deathX: number;
   deathY: number;
 }
@@ -64,7 +66,7 @@ const SUMMARY_COLS: (keyof RunSummary)[] = [
   'resonanceHits', 'coverage', 'resonancePerMin', 'bursts', 'elitesSpawned', 'elitesKilled', 'bossKills',
   'damageTaken', 'peakEnemies', 'revives', 'skipped', 'rerolls', 'sand', 'weapons', 'passives',
   'crystals', 'evolutions', 'altarReached', 'altarCrafted', 'eventsFired', 'deathX', 'deathY',
-  'pincerHits', 'pincerPerMin', 'syncTime', 'syncPct', 'syncMaxStreak',
+  'pincerHits', 'pincerPerMin', 'syncTime', 'syncPct', 'syncMaxStreak', 'cheated',
 ];
 
 function esc(v: unknown): string {

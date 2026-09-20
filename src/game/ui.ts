@@ -24,6 +24,8 @@ export interface UIHandlers {
   buyMeta(id: string): void;
   exportSave(): void;
   exportReport(): void;
+  /** M3 作弊码：执行一条并返回结果（UI 只负责把文本送进去） */
+  inputCheat(text: string): void;
   importSave(): void;
   openSetup(): void;
   closeSetup(): void;
@@ -82,6 +84,8 @@ export interface ResultData {
   /** M3：最长连续同步时长（秒）与结算时对应的 ramp 增益(%) */
   syncMaxStreak: number;
   syncBonusPct: number;
+  /** M3：本局是否用过作弊码（结算页给出明确标记） */
+  cheated: boolean;
   bursts: number;
   elites: number;
   bossKills: number;
@@ -155,6 +159,10 @@ export class UI {
   private codexProgress = $('codexProgress');
   private achvList = $('achvList');
   private achvProgress = $('achvProgress');
+  /** M3 作弊码 */
+  private cheatInput = $('cheatInput') as HTMLInputElement;
+  private cheatResult = $('cheatResult');
+  private cheattext = $('cheattext');
   private levelup = $('levelup');
   private cards = $('cards');
   private pause = $('pause');
@@ -184,6 +192,20 @@ export class UI {
     $('btnMetaClose').onclick = () => h.closeMeta();
     $('btnCodexTitle').onclick = () => h.openCodex();
     $('btnCodexClose').onclick = () => h.closeCodex();
+    // 作弊码输入（M3）：回车或点按钮执行；输入框内的按键不再冒泡给游戏（否则打字会触发重开/选卡）
+    const submitCheat = (): void => {
+      const v = this.cheatInput.value;
+      this.cheatInput.value = '';
+      if (v.trim()) h.inputCheat(v);
+    };
+    this.cheatInput.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submitCheat();
+      }
+    });
+    $('btnCheat').onclick = () => submitCheat();
     $('btnMetaExport').onclick = () => h.exportSave();
     $('btnReport').onclick = () => h.exportReport();
     $('btnMetaImport').onclick = () => h.importSave();
@@ -301,8 +323,7 @@ export class UI {
     this.meta.classList.add('hidden');
   }
 
-  /** 图鉴 + 成就（M3）：未遭遇时只显示剪影；成就显示历史最佳进度 */
-  showCodex(
+  /** 图鉴 + 成就（M3）：未遭遇时只显示剪影；成就显示历史最佳进度 */  showCodex(
     entries: readonly { kind: string; name: string; glyph: string; color: number; stats: string; behavior: string; tip: string }[],
     kills: Record<string, number>,
     ids: readonly string[],
@@ -423,6 +444,9 @@ export class UI {
     }
     this.altarhint.textContent = hint;
     this.eventtext.textContent = w.eventKind ? `${eventLabel(w.eventKind)} ${Math.ceil(w.eventT)}s` : '';
+
+    // 作弊标记（M3）：用过作弊码就常驻显示，避免"看不出这局不干净"
+    if (this.cheattext.textContent === '' && w.cheated) this.cheattext.textContent = '⚑ 作弊已启用';
 
     // 回响同步（M3）：本体贴近残影 → 全局增益；指示器亮起让"编队状态"随时可见
     const synced = w.isSynced();
@@ -551,6 +575,12 @@ export class UI {
     this.pause.classList.add('hidden');
   }
 
+  /** M3 作弊码：把执行结果显示在暂停面板里（HELP 会列出全表，用 pre 保留换行） */
+  showCheatResult(text: string, ok: boolean): void {
+    this.cheatResult.textContent = ok ? `✓ ${text}` : `✗ ${text}`;
+    this.cheatResult.className = ok ? 'cheatresult' : 'cheatresult bad';
+  }
+
   showResult(d: ResultData): void {
     this.resEyebrow.textContent = d.win ? 'VICTORY · 时间为你停留' : 'RUN OVER';
     this.resEyebrow.className = d.win ? 'eyebrow c' : 'eyebrow';
@@ -583,6 +613,7 @@ export class UI {
       stat(`${d.runs}`, '历史局数'),
       stat(fmtTime(d.bestTime), '最佳存活'),
       stat(rateOk ? '✓' : '—', '共鸣 KPI 达标', true),
+      ...(d.cheated ? [stat('⚑ 是', '作弊局（不计成就与历史最佳）', true)] : []),
     ].join('');
     const leftMin = Math.max(0, Math.ceil((BAL.meta.runSeconds - d.time) / 60));
     this.resHint.textContent =

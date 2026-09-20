@@ -34,8 +34,10 @@ export interface DiagState {
   crashes: CrashEntry[];
   /** 游玩日（本地日期 YYYY-MM-DD，去重升序，最多 120 天） */
   playDays: string[];
-  /** 每局存活秒数（本机，最多 200 局）——用于中位局时长 */
+  /** 每局存活秒数（本机，最多 200 局）——用于中位局时长（**作弊局不进样本**） */
   runSeconds: number[];
+  /** M3：作弊局计数（只计数、不进中位样本，保证验收数据不被作弊污染） */
+  cheatedRuns: number;
   /** 每次会话的粗信息（用于回访分布） */
   sessionStarts: string[];
 }
@@ -67,6 +69,7 @@ export class Diagnostics {
     crashes: [],
     playDays: [],
     runSeconds: [],
+    cheatedRuns: 0,
     sessionStarts: [],
   };
 
@@ -156,9 +159,13 @@ export class Diagnostics {
     this.persist();
   }
 
-  /** 每局结束登记存活时长（中位局时长的原始数据） */
-  noteRun(seconds: number, runId: number): void {
-    this.state.runSeconds.push(Math.round(seconds * 10) / 10);
+  /** 每局结束登记存活时长；作弊局只计数、不进中位样本 */
+  noteRun(seconds: number, runId: number, cheated = false): void {
+    if (cheated) {
+      this.state.cheatedRuns++;
+    } else {
+      this.state.runSeconds.push(Math.round(seconds * 10) / 10);
+    }
     try {
       const raw = localStorage.getItem(SESSION_KEY);
       const cur = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
@@ -238,7 +245,7 @@ export class Diagnostics {
       '',
       '| 指标 | 实测 | 判定 |',
       '|---|---|---|',
-      l(med > 0 ? med >= 18 * 60 : null, '中位局时长 ≥18min', med > 0 ? `${(med / 60).toFixed(1)}min（n=${this.state.runSeconds.length}）` : '—'),
+      l(med > 0 ? med >= 18 * 60 : null, '中位局时长 ≥18min', med > 0 ? `${(med / 60).toFixed(1)}min（n=${this.state.runSeconds.length}${this.state.cheatedRuns > 0 ? ` · 已排除 ${this.state.cheatedRuns} 局作弊` : ''}）` : '—'),
       l(r.days > 0 ? r.d3 : null, '3 日回访 ≥35%', `${r.days} 个游玩日 · D1 ${r.d1 ? '✓' : '✗'} · D3 ${r.d3 ? '✓' : '✗'} · D7 ${r.d7 ? '✓' : '✗'} · 最大间隔 ${r.maxGap} 天`),
       l(this.state.sessions > 0 ? crash < 0.005 : null, '崩溃率 <0.5%', `${(crash * 100).toFixed(2)}%（${this.errorCount()} 条捕获异常）`),
       '',
@@ -246,6 +253,7 @@ export class Diagnostics {
       '',
       `- 游玩日：${this.state.playDays.join(' ') || '—'}`,
       `- 每局存活（秒）：${this.state.runSeconds.map((s) => s.toFixed(0)).join(' ') || '—'}`,
+      `- 作弊局（已排除在上方中位样本外）：${this.state.cheatedRuns} 局`,
       '',
       '## 最近异常',
       '',
@@ -261,6 +269,7 @@ export class Diagnostics {
   clear(): void {
     this.state.crashes = [];
     this.state.runSeconds = [];
+    this.state.cheatedRuns = 0;
     this.persist();
   }
 }

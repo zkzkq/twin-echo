@@ -9,6 +9,8 @@ import { applyChoice, genChoices, type Choice } from './upgrades';
 import { World, ECHO_BUF, type WorldEvent } from './world';
 import type { RunStats } from './types';
 import { craftEvolution, satisfiableRecipes } from './altar';
+import { CHEATS, applyCheat, type CheatCtx } from './cheats';
+import { spawnBoss } from './enemies';
 import { eventLabel } from './events';
 import { canBuy, computeBonuses, totalMetaCost } from './meta';
 import { computeRunMods, type RunOptions } from './runconfig';
@@ -191,7 +193,10 @@ export class Game {
       closeCodex: () => this.closeCodex(),
       buyMeta: (id) => this.buyMeta(id),
       exportSave: () => this.exportSave(),
-      exportReport: () => this.exportReport(),      importSave: () => this.importSave(),
+      exportReport: () => this.exportReport(),
+      inputCheat: (text) => {
+        this.inputCheat(text);
+      },      importSave: () => this.importSave(),
       openSetup: () => this.openSetup(),
       closeSetup: () => this.closeSetup(),
       selectChar: (id) => this.selectChar(id),
@@ -312,6 +317,62 @@ export class Game {
     p.active = (p.hold || p.persistent) && p.inside && this.state === 'run';
   }
 
+  // ---------- 作弊码（M3 调试/玩具） ----------
+
+  /** 本局已用过的作弊码（不可重复的那些靠它拦） */
+  private usedCheats = new Set<string>();
+
+  /** 作弊码可用的特权能力（cheats.ts 不 import Game，避免循环依赖与私有字段穿透） */
+  private cheatCtx(): CheatCtx {
+    return {
+      world: this.world,
+      addSand: (n) => {
+        this.saved.sand += n;
+        this.save();
+      },
+      unlockAllMeta: () => {
+        this.saved.nodes = META_NODES.map((n) => n.id);
+        this.save();
+        return this.saved.nodes.length;
+      },
+      forceWin: () => {
+        this.world.time = Math.max(this.world.time, BAL.meta.runSeconds);
+        this.world.boss = null;
+      },
+      summonBoss: (kind) => {
+        const k = kind || BAL.bosses[Math.min(this.world.bossIdx, BAL.bosses.length - 1)]!.kind;
+        spawnBoss(this.world, k);
+        const def = BAL.bosses.find((b) => b.kind === k);
+        return def ? `${def.name}（HP ${def.hp}）` : k;
+      },
+      helpText: () => CHEATS.map((c) => `${c.code.padEnd(12, ' ')} ${c.name} —— ${c.desc}`).join('\n'),
+    };
+  }
+
+  /**
+   * 输入一个作弊码（大小写/空格/连字符不敏感）。返回 {ok, msg} 便于测试与 UI 复用。
+   * 副作用：成功即把本局标记为 `cheated`（成就/历史最佳/验收统计都会隔离）。
+   */
+  inputCheat(text: string): { ok: boolean; msg: string; code?: string } {
+    const res = applyCheat(text, this.cheatCtx(), this.usedCheats);
+    if (!res.ok) {
+      this.ui.toast(res.msg, 'red');
+      if (res.def) this.ui.showCheatResult(res.msg, false);
+      return { ok: false, msg: res.msg };
+    }
+    const def = res.def!;
+    if (def.code === 'HELP') {
+      this.ui.showCheatResult(res.msg, true);
+      this.ui.toast('作弊码清单已列在暂停面板里', 'cyan');
+    } else {
+      this.ui.toast(`⚑ ${def.name}：${res.msg}`, 'gold');
+      this.ui.showCheatResult(`${def.code} · ${def.name}：${res.msg}`, true);
+    }
+    this.ui.renderSlots(this.world);
+    this.telemetry.log(this.world.time, 'cheat', { code: def.code, msg: res.msg });
+    return { ok: true, msg: res.msg, code: def.code };
+  }
+
   // ---------- 存档 ----------
   private loadSave(): void {
     try {
@@ -334,6 +395,9 @@ export class Game {
 
   private onKeyDown(e: KeyboardEvent): void {
     const k = normKey(e.key);
+    // 焦点在输入框里（作弊码输入）时，一律不当作游戏按键——否则打字会触发重开/选卡
+    const tgt = e.target as HTMLElement | null;
+    if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA')) return;
     if (e.key === ' ' || e.key.startsWith('Arrow')) e.preventDefault();
     if (e.repeat) {
       this.keys.add(k);
@@ -1140,6 +1204,7 @@ export class Game {
 
   startRun(asDaily = false): void {
     const daily = asDaily;
+    this.usedCheats.clear(); // 作弊码"不可重复"按局计算
     this.runIsDaily = daily;
     this.runOptions.daily = daily;
     const key = dailyKey();
@@ -1296,7 +1361,8 @@ export class Game {
     for (const [k, v] of w.codex) this.saved.codex[k] = (this.saved.codex[k] ?? 0) + v;
 
     // M3：成就评估（局末统一判定——不在战斗热路径埋点，也不用担心中途崩溃丢判定）
-    const unlockedNow = this.checkAchievements(w, st, win);
+    // 作弊局一律不评估：否则 ALLWEAPON / LEVELUP 这类码会把武器与等级成就直接刷出来
+    const unlockedNow = w.cheated ? [] : this.checkAchievements(w, st, win);
 
     this.saved.firstRun = false;
     this.save();
@@ -1344,9 +1410,10 @@ export class Game {
       syncMaxStreak: Math.round(st.syncMaxStreak * 10) / 10,
       deathX: Math.round(w.player.x),
       deathY: Math.round(w.player.y),
+      cheated: w.cheated,
     });
-    // M3 验收：登记本局存活时长（中位局时长的原始数据）
-    diag.noteRun(w.time, this.telemetry.runIdNow());
+    // M3 验收：登记本局存活时长（中位局时长的原始数据）；作弊局只计数、不进中位样本
+    diag.noteRun(w.time, this.telemetry.runIdNow(), w.cheated);
 
     this.ui.showResult({
       win,
@@ -1360,6 +1427,7 @@ export class Game {
       syncPct,
       syncMaxStreak: Math.round(st.syncMaxStreak * 10) / 10,
       syncBonusPct: Math.round(w.syncBonus() * 100),
+      cheated: w.cheated,
       bursts: st.bursts,
       elites: st.elitesKilled,
       bossKills: st.bossKills,

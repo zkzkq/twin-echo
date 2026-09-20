@@ -26,6 +26,7 @@
         <div id="resLabel">共 鸣</div>
       </div>
       <div id="infobar">
+        <span id="cheattext" class="cheatbadge"></span>
         <span id="synctext" class="syncOff">回响分离</span>
         <span id="domaintext"></span>
         <span id="crystaltext">◇ 结晶 0</span>
@@ -160,6 +161,12 @@
       <div class="panelbox">
         <h2>暂 停</h2>
         <div id="pauseStats" class="buildlist"></div>
+        <div class="cheatbox">
+          <span class="cheatlabel">作弊码</span>
+          <input id="cheatInput" class="cheatinput" type="text" placeholder="输入作弊码后回车（HELP 查看全部）" autocomplete="off" spellcheck="false" />
+          <button class="btn small" id="btnCheat">执行</button>
+        </div>
+        <pre id="cheatResult" class="cheatresult"></pre>
         <div class="row">
           <button class="btn primary" id="btnResume">继续（P）</button>
           <button class="btn" id="btnRestart">重开一局（R）</button>

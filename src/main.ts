@@ -6,6 +6,7 @@ import { diag } from './core/diagnostics';
 import {
   ACHIEVEMENTS, EMPTY_CTX, achievementById, emitUnlock, evaluateAchievements, registerSink,
 } from './config/achievements';
+import { CHEATS, applyCheat, findCheat, normalizeCheat } from './game/cheats';
 import { craftEvolution, satisfiableRecipes } from './game/altar';
 import { computeBonuses, totalMetaCost } from './game/meta';
 import { genChoices } from './game/upgrades';
@@ -41,6 +42,8 @@ const game = new Game();
 (window as unknown as { __achv?: unknown }).__achv = {
   ACHIEVEMENTS, EMPTY_CTX, achievementById, evaluateAchievements, registerSink, emitUnlock,
 };
+// 作弊码钩子（M3）：冒烟测试逐条验证效果与归一化
+(window as unknown as { __cheats?: unknown }).__cheats = { CHEATS, findCheat, normalizeCheat, applyCheat };
 
 game
   .init()
