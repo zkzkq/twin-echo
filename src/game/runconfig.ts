@@ -2,6 +2,7 @@ import { BAL } from '../config/balance';
 import { characterById, type CharacterDef } from '../config/characters';
 import { paradoxByLvl, type ParadoxMods } from '../config/paradox';
 import { dailyKey, dailyMod, type DailyMod } from '../config/daily';
+import { difficultyById } from '../config/difficulty';
 
 /** 一局的可配置来源：角色 / 悖论等级 / 每日挑战 */
 export interface RunOptions {
@@ -10,6 +11,8 @@ export interface RunOptions {
   daily: boolean;
   /** 地图 id（GDD §6.7；默认时钟平原） */
   map?: string;
+  /** 难度预设（M3 校准工具，非 GDD 内容；默认标准） */
+  difficulty?: string;
 }
 
 /** 汇总后的局内修正（角色 + 悖论 + 每日；密库增益单独走 world.meta） */
@@ -20,6 +23,15 @@ export interface RunMods {
   daily: boolean;
   /** 地图 id（世界按此查 MapDef） */
   map: string;
+  /** 难度预设（M3 校准） */
+  difficulty: string;
+  difficultyName: string;
+  hurtGracePct: number;
+  contactDmgPct: number;
+  levelHealBonus: number;
+  bossBulletCountMult: number;
+  bossBulletSpeedMult: number;
+  bossBulletDmgMult: number;
   dailyModName: string;
   dailyModDesc: string;
   /** 残影 */
@@ -100,6 +112,8 @@ export function computeRunMods(opts: RunOptions): RunMods {
   const m: RunMods = {
     character: 'otto', characterName: '', paradox: opts.paradox, daily: opts.daily,
     map: opts.map ?? 'plain',
+    difficulty: 'standard', difficultyName: '', hurtGracePct: 0, contactDmgPct: 0,
+    levelHealBonus: 0, bossBulletCountMult: 1, bossBulletSpeedMult: 1, bossBulletDmgMult: 1,
     dailyModName: '', dailyModDesc: '',
     echoDelayFrames: BAL.echo.delayFrames,
     echoCoeff: BAL.echo.coeff,
@@ -112,6 +126,16 @@ export function computeRunMods(opts: RunOptions): RunMods {
   fromCharacter(characterById(opts.character), m);
   fromParadox(paradoxByLvl(opts.paradox).mods, m);
   if (opts.daily) fromDaily(dailyMod(dailyKey()), m);
+  const diff = difficultyById(opts.difficulty ?? 'standard');
+  m.difficulty = diff.id;
+  m.difficultyName = diff.name;
+  m.hurtGracePct = diff.hurtGracePct;
+  m.contactDmgPct = diff.contactDmgPct;
+  m.levelHealBonus = diff.levelHealBonus;
+  m.bossBulletCountMult = diff.bossBulletCountMult;
+  m.bossBulletSpeedMult = diff.bossBulletSpeedMult;
+  m.bossBulletDmgMult = diff.bossBulletDmgMult;
+  m.spawnPct += diff.spawnPct;
   return m;
 }
 

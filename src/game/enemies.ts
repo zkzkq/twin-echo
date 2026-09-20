@@ -87,7 +87,7 @@ export function spawnEnemy(w: World, kind: EnemyKind, x: number, y: number, elit
     const hpMult = BAL.enemyHpScale(m) * (elite ? BAL.elite.hpMult : 1);
     e.maxHp = e.hp = Math.round(b.hp0 * hpMult);
     e.speed = b.speed * (1 + w.run.enemySpeedPct);
-    e.dmg = Math.max(1, Math.round((b.dmg + (elite ? 2 : 0)) * (1 + w.run.enemyDmgPct)));
+    e.dmg = Math.max(1, Math.round((b.dmg + (elite ? 2 : 0)) * (1 + w.run.enemyDmgPct + w.run.contactDmgPct)));
     e.xpVal = b.xp;
     e.radius = b.radius * (elite ? BAL.elite.sizeMult : 1);
     e.armor = elite ? 4 : 0;
@@ -371,7 +371,13 @@ function updateMinute(w: World, e: Enemy, dt: number, nx: number, ny: number, sl
     case 2: // 环形弹幕（多波）
       if (e.fireCd <= 0) {
         e.fireCd = 0.35;
-        ringBullets(w, e, BAL.boss.barrageCount, BAL.boss.bulletSpeed, BAL.boss.bulletDmg, (e.ay * Math.PI) / BAL.boss.barrageCount);
+        ringBullets(
+          w, e,
+          Math.max(6, Math.round(BAL.boss.barrageCount * w.run.bossBulletCountMult)),
+          BAL.boss.bulletSpeed * w.run.bossBulletSpeedMult,
+          Math.max(3, Math.round(BAL.boss.bulletDmg * w.run.bossBulletDmgMult)),
+          (e.ay * Math.PI) / BAL.boss.barrageCount,
+        );
         e.ay++;
         if (e.ay >= e.ax) {
           e.st = 0;

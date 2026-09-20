@@ -19,7 +19,13 @@ const { cdp, close } = await openApp(APP_URL);
 const kpi = [];
 try {
   for (let run = 0; run < RUNS; run++) {
-    await cdp.eval(`(() => { const g = __twinEcho; g.startRun(); g.world.firstRun = true; window.__P = { f: 0, peak: 0, samples: [] }; return 1; })()`);
+    await cdp.eval(`(() => { const g = __twinEcho;
+      g.runOptions.difficulty = '${process.env.PROBE_DIFF ?? 'standard'}';
+      g.runOptions.map = '${process.env.PROBE_MAP ?? 'plain'}';
+      g.runOptions.character = '${process.env.PROBE_CHAR ?? 'otto'}';
+      g.runOptions.paradox = ${Number(process.env.PROBE_PARADOX ?? 0)};
+      g.startRun(); g.world.firstRun = true;
+      window.__P = { f: 0, peak: 0, samples: [] }; return 1; })()`);
     await cdp.eval(BOT_FN);
     await cdp.eval(BOT_SAFE_FN);
     // PROBE_BOT=greedy（默认，贪宝石）| safe（生存优先）

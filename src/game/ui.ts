@@ -27,6 +27,7 @@ export interface UIHandlers {
   selectChar(id: string): void;
   selectParadox(lvl: number): void;
   selectMap(id: string): void;
+  selectDifficulty(id: string): void;
   startDaily(): void;
 }
 
@@ -41,6 +42,7 @@ export interface SetupView {
   characters: SetupCharView[];
   paradox: { lvl: number; name: string; desc: string; state: 'selected' | 'owned' | 'locked' }[];
   maps: { id: string; name: string; desc: string; state: 'selected' | 'owned' | 'locked'; beaten: boolean }[];
+  difficulty: { id: string; name: string; desc: string; selected: boolean }[];
   daily: { key: string; modName: string; modDesc: string; charName: string; best: string; cleared: boolean };
 }
 
@@ -127,6 +129,7 @@ export class UI {
   private setupParadox = $('setupParadox');
   private setupDaily = $('setupDaily');
   private setupMaps = $('setupMaps');
+  private setupDiff = $('setupDiff');
   private setupSand = $('setupSand');
   private titleConfig = $('titleConfig');
   private toasts = $('toasts');
@@ -202,6 +205,16 @@ export class UI {
       .join('');
     this.setupMaps.querySelectorAll('.mapcard:not(.locked)').forEach((el) => {
       (el as HTMLElement).onclick = () => this.h.selectMap((el as HTMLElement).dataset.id ?? '');
+    });
+    this.setupDiff.innerHTML = v.difficulty
+      .map(
+        (d) => `<button class="parabtn ${d.selected ? 'selected' : ''}" data-id="${d.id}">
+          ${d.name}<small>${d.desc}</small>
+        </button>`,
+      )
+      .join('');
+    this.setupDiff.querySelectorAll('.parabtn').forEach((el) => {
+      (el as HTMLElement).onclick = () => this.h.selectDifficulty((el as HTMLElement).dataset.id ?? 'standard');
     });
     this.setupDaily.innerHTML =
       `<div><b>${v.daily.modName}</b> —— ${v.daily.modDesc}</div>` +

@@ -422,6 +422,36 @@ try {
   );
   check(maps.ringHazards >= 1 && maps.ringId === 'ring', '崩坏之环：时潮涡流危险区按周期刷新', `15s 内生成 ${maps.ringHazards} 片`);
 
+  // 12.97 M3(C)：难度预设（校准杠杆可切换）
+  const diff = await cdp.eval(`(() => {
+    const g = __twinEcho, w = g.world;
+    g.saved.nodes = [];
+    // 恩惠：受击宽限 1.0 → 1.5s、接触伤 −40%、升级回复 +10
+    g.runOptions.character = 'otto'; g.runOptions.paradox = 0; g.runOptions.map = 'plain';
+    g.runOptions.difficulty = 'casual';
+    g.startRun();
+    g.world.player.hurtCd = 0; g.world.player.invulnT = 0;
+    g.world.damagePlayer(1);
+    const casual = { grace: +g.world.player.hurtCd.toFixed(2), id: g.world.run.difficulty };
+    const h0 = g.world.player.hp; g.world.addXp(0);
+    g.world.player.xp = g.world.player.xpNeed; g.world.addXp(0);
+    const healCasual = +(g.world.player.hp - h0).toFixed(1);
+    // 标准：宽限应回到 1.0
+    g.runOptions.difficulty = 'standard'; g.startRun();
+    g.world.player.hurtCd = 0; g.world.player.invulnT = 0;
+    g.world.damagePlayer(1);
+    const std = +g.world.player.hurtCd.toFixed(2);
+    // 严苛：接触伤 +25%（时蛾 3 → 4）
+    g.runOptions.difficulty = 'hard'; g.startRun();
+    __BAL.spawn.interval = [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05];
+    __BAL.spawn.batch = [5, 5, 5, 5, 5, 5, 5, 5, 5];
+    for (let i = 0; i < 130; i++) g.world.update(1/60);
+    const moth = g.world.enemies.items.find((e) => e.active && e.kind === 'moth' && !e.elite);
+    return { casual, std, hardMothDmg: moth ? moth.dmg : -1, healCasual };
+  })()`);
+  check(diff.casual.grace === 1.5 && diff.std === 1, '难度预设：恩惠宽限 1.5s / 标准 1.0s', `恩惠 ${diff.casual.grace}s · 标准 ${diff.std}s`);
+  check(diff.hardMothDmg === 4, '难度预设：严苛接触伤 +25%（时蛾 3 → 4）', `实测 ${diff.hardMothDmg}`);
+
   // 13. 运行时异常
   check(cdp.errors.length === 0, '无未捕获运行时异常', cdp.errors.slice(0, 2).join(' | '));
   check(cdp.consoleErrors.length === 0, '无 console.error', cdp.consoleErrors.slice(0, 2).join(' | '));

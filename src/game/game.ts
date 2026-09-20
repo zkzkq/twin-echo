@@ -14,6 +14,7 @@ import { CHARACTERS, characterById } from '../config/characters';
 import { PARADOX, paradoxSandMult } from '../config/paradox';
 import { DAILY_FIRST_CLEAR_SAND, dailyCharacterId, dailyKey, dailySeed, dailyMod } from '../config/daily';
 import { MAPS, mapById, mapUnlocked } from '../config/maps';
+import { DIFFICULTIES } from '../config/difficulty';
 import type { Obstacle } from './terrain';
 import { META_BRANCHES, META_NODES, metaCost, metaPrereq } from '../config/meta';
 import type { EvolutionDef } from '../config/items';
@@ -149,6 +150,7 @@ export class Game {
       selectChar: (id) => this.selectChar(id),
       selectParadox: (lvl) => this.selectParadox(lvl),
       selectMap: (id) => this.selectMap(id),
+      selectDifficulty: (id) => this.selectDifficulty(id),
       startDaily: () => this.startDaily(),
     });
 
@@ -683,6 +685,9 @@ export class Game {
           beaten: this.saved.mapsBeaten.includes(m.id),
         };
       }),
+      difficulty: DIFFICULTIES.map((d) => ({
+        id: d.id, name: d.name, desc: d.desc, selected: (this.runOptions.difficulty ?? 'standard') === d.id,
+      })),
     };
   }
 
@@ -749,6 +754,12 @@ export class Game {
       return;
     }
     this.runOptions.map = id;
+    this.ui.showSetup(this.setupView());
+  }
+
+  /** 选择难度预设（M3 校准工具） */
+  selectDifficulty(id: string): void {
+    this.runOptions.difficulty = id;
     this.ui.showSetup(this.setupView());
   }
 
@@ -858,8 +869,9 @@ export class Game {
     this.world.reset(this.seed, this.saved.firstRun, computeBonuses(this.saved.nodes), mods);
     this.telemetry.runStart(this.seed, this.saved.firstRun);
     this.telemetry.log(0, 'run_config', {
-      character: mods.character, paradox: mods.paradox, daily,
-      dailyMod: mods.dailyModName, echoDelay: mods.echoDelayFrames, choiceCount: mods.choiceCount,
+      character: mods.character, paradox: mods.paradox, daily, map: mods.map,
+      difficulty: mods.difficulty, dailyMod: mods.dailyModName,
+      echoDelay: mods.echoDelayFrames, choiceCount: mods.choiceCount,
     });
     if (this.saved.firstRun) {
       // §9 教学 0:00–0:10：移动是第一课（强提示 + 敌人从四周来）

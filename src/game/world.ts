@@ -642,7 +642,7 @@ export class World {
       p.level++;
       this.stats.levelsGained++;
       p.xpNeed = BAL.xpCurve(p.level);
-      p.hp = Math.min(p.maxHp, p.hp + BAL.player.levelHeal + this.meta.levelHealBonus);
+      p.hp = Math.min(p.maxHp, p.hp + BAL.player.levelHeal + this.meta.levelHealBonus + this.run.levelHealBonus);
       this.pendingLevelUps++;
       this.audio.levelup();
     }
@@ -652,7 +652,7 @@ export class World {
     const p = this.player;
     if (!this.running || p.invulnT > 0 || p.hurtCd > 0) return;
     p.hp -= dmg;
-    p.hurtCd = BAL.player.hurtGrace;
+    p.hurtCd = BAL.player.hurtGrace * (1 + this.run.hurtGracePct); // 难度预设（M3 校准）
     // 角色「时停者·诺亚」：受击 30% 概率时停 0.5s（内置 CD 5s）
     if (this.run.stasisOnHitChance > 0 && this.stasisCd <= 0 && this.rng.chance(this.run.stasisOnHitChance)) {
       this.stasisCd = 5;
