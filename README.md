@@ -17,7 +17,7 @@ pnpm bench      # 性能压测：300 敌稳态下测逻辑/渲染耗时（BENCH_
 pnpm mc         # 蒙特卡洛回归门禁：连跑 N 局并对照回退阈值
 pnpm ab         # 共鸣几何 A/B 实验（延迟 vs 残影射程）
 pnpm telemetry  # 汇总试玩回收的遥测 CSV → KPI 报告
-pnpm nightly    # 夜间回归：tsc → build → smoke → mc（CI 见 .github/workflows/nightly.yml）
+pnpm nightly    # 本地完整回归：tsc → build → smoke → mc（CI 为手动触发的 .github/workflows/regression.yml）
 ```
 
 > 端口说明：默认 5173 落在 Windows 保留端口区（5134–5233，由 Hyper-V/WSL 预留），故改用 4173。

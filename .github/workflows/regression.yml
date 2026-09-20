@@ -1,0 +1,85 @@
+name: regression
+
+# 回归工作流（GDD §11.2 "MC 回归进 CI"）。
+#
+# 触发方式：**仅手动**（Actions 页 → 选本工作流 → Run workflow）。
+# 为什么不做定时：私有仓库的 GitHub Actions 免费额度为 2000 分钟/月，而蒙特卡洛回归
+# 每局最长 600s 游戏时间，一轮 20 局实测可达数十分钟——定时跑几天就会耗尽额度。
+# 需要恢复定时任务时，取消下面 schedule 的注释并调小 mc_runs 即可。
+#
+# 前置：headless 浏览器由 cdp.mjs 跨平台探测（Linux 走 /usr/bin/google-chrome*），
+# 也可用 CHROME_PATH 环境变量显式指定；无头 WebGL 依赖 --enable-unsafe-swiftshader（已内置）。
+
+on:
+  # schedule:
+  #   - cron: '0 2 * * *'   # 每日 02:00 UTC（北京时间 10:00）——恢复前请确认 Actions 配额
+  workflow_dispatch:
+    inputs:
+      mc_runs:
+        description: 'Monte-Carlo 局数（越大越慢；建议 3–5，私有仓库注意 Actions 配额）'
+        required: false
+        default: '5'
+      mc_cap_s:
+        description: '单局上限秒数（默认 600 = 完整 20 分钟局）'
+        required: false
+        default: '600'
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: npm i -g pnpm@10
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: node node_modules/typescript/bin/tsc --noEmit
+
+      - name: Build
+        run: node node_modules/vite/bin/vite.js build
+
+      - name: Install headless browser deps
+        run: |
+          # ubuntu-latest 自带 google-chrome；这里只兜底装共享库（已存在则跳过）
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2 || true
+
+      - name: Start dev server
+        run: |
+          node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 4173 --strictPort &
+          sleep 3
+          curl -fsS http://127.0.0.1:4173/ > /dev/null
+
+      - name: Smoke (44 assertions)
+        run: node scripts/smoke.mjs
+        env:
+          APP_URL: http://127.0.0.1:4173/
+
+      - name: Monte-Carlo regression gate
+        run: node scripts/mc.mjs
+        env:
+          APP_URL: http://127.0.0.1:4173/
+          MC_RUNS: ${{ inputs.mc_runs }}
+          MC_CAP_S: ${{ inputs.mc_cap_s }}
+          CDP_WATCHDOG_MS: '3600000'
+
+      - name: Pacing sim
+        run: node node_modules/tsx/dist/cli.mjs scripts/sim.ts
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-failure
+          path: |
+            telemetry/
+          if-no-files-found: ignore

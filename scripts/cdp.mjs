@@ -12,12 +12,47 @@ import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+/**
+ * 无头浏览器候选路径（跨平台）：本地 Windows 开发 + Linux/macOS CI 都能找到。
+ * CI 上若都没有，先在 runner 里装一个（GitHub 的 ubuntu-latest 自带 google-chrome）。
+ */
 const BROWSERS = [
+  // Windows
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  // Linux（CI runner / 容器）
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/snap/bin/chromium',
+  // macOS
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
 ];
+
+/** 跨平台杀进程：Windows 用 taskkill /T（杀进程树），类 Unix 用进程组信号 */
+export function killProcessTree(pid) {
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+      return;
+    } catch {
+      /* 落到下面 */
+    }
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* 已退出 */
+    }
+  }
+}
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -168,8 +203,14 @@ export async function waitFor(cdp, expr, timeoutMs, label) {
 
 /** 启动无头浏览器并打开应用，返回 { cdp, browser, close } */
 export async function openApp(url, port) {
-  const browser = BROWSERS.find((p) => existsSync(p));
-  if (!browser) throw new Error('未找到 Edge/Chrome，无法执行 headless 测试');
+  // CHROME_PATH 可显式指定浏览器（CI 或非标准安装路径用）
+  const envPath = process.env.CHROME_PATH;
+  const browser = (envPath && existsSync(envPath) ? envPath : undefined) ?? BROWSERS.find((p) => existsSync(p));
+  if (!browser) {
+    throw new Error(
+      '未找到 Edge/Chrome。请安装任一浏览器后重试（Linux CI 可 apt-get install -y google-chrome-stable，或设置 CHROME_PATH 环境变量）',
+    );
+  }
   const cdpPort = port ?? 9200 + Math.floor(Math.random() * 600);
   const profile = mkdtempSync(join(tmpdir(), 'twin-echo-cdp-'));
   const proc = spawn(
@@ -189,15 +230,13 @@ export async function openApp(url, port) {
     { stdio: 'ignore' },
   );
 
-  // 杀进程树：proc.kill 只杀启动器；taskkill /T 对"已被重新挂载的孙进程"同样无效，
-  // 故再按唯一 profile 路径兜底清理（否则每次测试残留数十个浏览器进程，抢占 CPU 并污染性能测量）。
+  // 杀进程树：proc.kill 只杀启动器；Windows 的 taskkill /T 对"已被重新挂载的孙进程"同样无效，
+  // 故 Windows 上再按唯一 profile 路径兜底清理（否则每次测试残留数十个浏览器进程，抢占 CPU 并污染性能测量）。
+  // 类 Unix（CI）走进程组信号即可。
   const profileTag = profile.split(/[\\/]/).pop();
   const killTree = () => {
-    try {
-      spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { stdio: 'ignore' });
-    } catch {
-      proc.kill();
-    }
+    killProcessTree(proc.pid);
+    if (process.platform !== 'win32') return;
     try {
       spawnSync(
         'powershell',
