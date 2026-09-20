@@ -29,8 +29,10 @@ export type WorldEvent =
   | 'boss-warn'
   | 'boss-spawn'
   | 'boss-dead'
+  | 'boss-phase'
   | 'elite-dead'
   | 'first-resonance'
+  | 'first-pincer'
   | 'gauge-full'
   | 'burst'
   | 'rush'
@@ -104,6 +106,10 @@ export class World {
   bossIdx = 0;
   /** 进化体「贯穿命运之矢」的击杀叠伤（当局累计，上限 +20%） */
   evoDmgBonus = 0;
+  /** 回响同步连续时长（秒）——同步 ramp 增益的来源，断同步清零（M3） */
+  syncStreak = 0;
+  /** 图鉴（M3）：本局按种类击杀统计（局末合并进存档） */
+  codex = new Map<string, number>();
   /** 沙流减速带（时漏巨像 §6.6）：玩家踏入减速 30% */
   sandZones: { x: number; y: number; r: number; t: number }[] = [];
   /** 残光轨迹留痕计时（本体/残影各一） */
@@ -209,7 +215,8 @@ export class World {
         x: 0, y: 0, hp: 1, maxHp: 1, dmg: 0, speed: 0, xpVal: 0, radius: 9, armor: 0,
         tint: 0xffffff, slowT: 0, frozenT: 0, flashT: 0, hitCd: 0, tele: false, st: 0, stT: 0, pat: 1,
         ax: 0, ay: 0, kx: 0, ky: 0, fireCd: 0, auraCd: 0,
-        lastHitSrc: null, lastHitT: -99, orbitCdB: 0, orbitCdE: 0, trailCd: 0, sprite, ring,
+        lastHitSrc: null, lastHitT: -99, lastHitX: 0, lastHitY: 0, phase: 0,
+        orbitCdB: 0, orbitCdE: 0, trailCd: 0, sprite, ring,
       };
     }, 340);
 
@@ -219,6 +226,7 @@ export class World {
         idx, active: false, x: 0, y: 0, vx: 0, vy: 0, dmg: 0, r: 7, life: 0,
         hostile: false, pierce: 1, hitIds: new Set<number>(), homing: false, retarget: 0,
         target: null, src: 'body', kind: 'bolt', forceCrit: false, weaponId: '', sprite,
+        returning: false,
       };
     }, 420);
 
@@ -276,7 +284,10 @@ export class World {
       level: 1, xp: 0, xpNeed: BAL.xpCurve(1), gauge: 0, crystals: 0, evolutions: new Set<string>(),
       weapons: new Map([[run.startWeapon || 'clock', { lv: 1 + meta.startWeaponLv, cd: 0.3 }]]),
       passives: new Map(),
-      stats: { dmg: 0, atkSpd: 0, critCh: 0.05, critDmg: 1.5, moveSpd: 0, resDmg: 0, resGain: 0, cd: 0, area: 0, echoRange: 1 },
+      stats: {
+        dmg: 0, atkSpd: 0, critCh: 0.05, critDmg: 1.5, moveSpd: 0, resDmg: 0, resGain: 0, cd: 0, area: 0, echoRange: 1,
+        echoDmg: 0, pickup: 0, armor: 0, regen: 0, greed: 0, damp: 0, burstDmg: 0,
+      },
     };
     recompute(this.player);
     // 密库增益（局外成长）
@@ -286,6 +297,8 @@ export class World {
     this.player.stats.critCh += meta.critBonus;
     this.player.stats.cd += meta.cdPct;
     this.player.stats.resDmg += meta.resDmgPct;
+    // 密库「开局共鸣值 +20」（M3）
+    this.player.gauge = Math.min(BAL.resonance.gaugeMax, meta.gaugeStart);
     // 本局修正（角色 / 悖论 / 每日）
     this.player.maxHp = Math.max(20, Math.round((this.player.maxHp + run.hpDelta) * (1 + run.hpPct)));
     this.player.pickupR *= 1 + run.pickupPct;
@@ -302,10 +315,11 @@ export class World {
     this.stats = {
       kills: 0, hits: 0, resHits: 0, bursts: 0, elitesKilled: 0, elitesSpawned: 0, bossKills: 0,
       levelsGained: 0, skipped: 0, sandBonus: 0, damageTaken: 0,
-      altarReached: 0, altarCrafted: 0, eventsFired: 0,
+      altarReached: 0, altarCrafted: 0, eventsFired: 0, pincerHits: 0, syncTime: 0, syncMaxStreak: 0,
     };
     this.flags = {
       resToasted: false, gaugeToasted: false, moveToasted: false, rushToasted: false, firstEliteToasted: false,
+      pincerToasted: false,
     };
 
     this.enemies.releaseAll();
@@ -343,6 +357,8 @@ export class World {
     this.eventCd = BAL.events.first;
     this.bossIdx = 0;
     this.evoDmgBonus = 0;
+    this.syncStreak = 0;
+    this.codex.clear();
     this.sandZones.length = 0;
     this.trailTimer = { body: 0, echo: Math.PI / 4 };
     this.profFrames.length = 0;
@@ -437,7 +453,11 @@ export class World {
     this.phase('events', () => updateEvents(this, dt));
     this.phase('director', () => this.director(dt));
 
-    if (this.time >= BAL.meta.runSeconds) {
+    // 胜利：20:00 到达**且终 Boss 已不在场**（GDD §6.6：击杀时间织造者·诺诺才算通关）。
+    // 诺诺恰好在 20:00 登场，所以到达 20:00 只是"进入终局"，她死的那一刻才结算胜利；
+    // 其余 Boss（如 05:00 分针兽）存活不影响 20:00 的结算判定（那只在提前跳时测试里才会遇到）。
+    const finalBossAlive = this.boss !== null && this.boss.active && this.boss.bossKind === 'weaver';
+    if (this.time >= BAL.meta.runSeconds && !finalBossAlive) {
       if (this.profEnabled) this.profCommit();
       this.running = false;
       this.onEvent('victory');
@@ -458,6 +478,9 @@ export class World {
     p.hurtCd = Math.max(0, p.hurtCd - dt);
     if (this.stasisCd > 0) this.stasisCd -= dt;
     if (this.burstHasteT > 0) this.burstHasteT -= dt;
+    // 被动「再生」+ 密库「再生/时相终章」（M3）：每秒回复生命
+    const regen = p.stats.regen + this.meta.regenPerSec;
+    if (regen > 0 && p.hp > 0) p.hp = Math.min(p.maxHp, p.hp + regen * dt);
 
     let mx = this.input.x;
     let my = this.input.y;
@@ -499,6 +522,15 @@ export class World {
     e.x = e.bx[idx]!;
     e.y = e.by[idx]!;
     e.facing = e.br[idx]!;
+
+    // 回响同步计时（M3：贴着残影作战的正收益时长，用于 KPI「编队时间占比」）
+    if (this.isSynced()) {
+      this.stats.syncTime += dt;
+      this.syncStreak += dt;
+      if (this.syncStreak > this.stats.syncMaxStreak) this.stats.syncMaxStreak = this.syncStreak;
+    } else {
+      this.syncStreak = 0;
+    }
 
     if (this.firstRun && !this.flags.moveToasted && this.time >= 6) {
       this.flags.moveToasted = true;
@@ -636,7 +668,8 @@ export class World {
 
   addXp(v: number): void {
     const p = this.player;
-    p.xp += v * (1 + this.run.xpPct);
+    // 被动「丰收」+ 密库「经验 +10% / 丰收之环」（M3）
+    p.xp += v * (1 + this.run.xpPct + p.stats.greed + this.meta.xpPct);
     while (p.xp >= p.xpNeed) {
       p.xp -= p.xpNeed;
       p.level++;
@@ -651,6 +684,10 @@ export class World {
   damagePlayer(dmg: number): void {
     const p = this.player;
     if (!this.running || p.invulnT > 0 || p.hurtCd > 0) return;
+    // 回响同步护体（M3）：编队 ramp 越高，受到的伤害越低（最高 -25%）——"贴住残影"同时是攻与守
+    dmg *= 1 - BAL.resonance.syncDefMax * this.syncRamp();
+    // 被动「甲壳」+ 密库「甲壳/时相终章」（M3）：固定减伤
+    dmg *= 1 - Math.min(0.6, p.stats.armor + this.meta.armorPct);
     p.hp -= dmg;
     p.hurtCd = BAL.player.hurtGrace * (1 + this.run.hurtGracePct); // 难度预设（M3 校准）
     // 角色「时停者·诺亚」：受击 30% 概率时停 0.5s（内置 CD 5s）
@@ -700,6 +737,9 @@ export class World {
   killEnemy(e: Enemy): void {
     if (!e.active) return;
     this.stats.kills++;
+    // 图鉴（M3）：按种类统计击杀（精英 / Boss 单独归类）
+    const codexId = e.boss ? e.bossKind : e.elite ? 'elite' : e.kind;
+    if (codexId) this.codex.set(codexId, (this.codex.get(codexId) ?? 0) + 1);
     const n = e.boss ? 40 : e.elite ? 16 : 6;
     for (let i = 0; i < n; i++) {
       this.spawnParticle(e.x, e.y, e.tint, this.rng.range(40, 200), this.rng.range(0.25, 0.5), this.rng.range(2, 4));
@@ -741,7 +781,7 @@ export class World {
 
   spawnBullet(
     x: number, y: number, vx: number, vy: number, dmg: number,
-    kind: 'bolt' | 'butterfly' | 'enemy', r: number, pierce: number, src: 'body' | 'echo',
+    kind: 'bolt' | 'butterfly' | 'enemy' | 'boomerang', r: number, pierce: number, src: 'body' | 'echo',
     homing: boolean, life: number,
   ): Bullet {
     const b = this.bullets.obtain();
@@ -761,6 +801,7 @@ export class World {
     b.src = src;
     b.kind = kind;
     b.forceCrit = false;
+    b.returning = false;
     b.weaponId = '';
     b.sprite.texture = kind === 'enemy' ? this.tex.bulletE : kind === 'butterfly' ? this.tex.butterfly : this.tex.bolt;
     b.sprite.tint = kind === 'enemy' ? COLORS.bulletE : kind === 'butterfly'
@@ -820,6 +861,30 @@ export class World {
     return BAL.resonance.window + this.meta.windowBonus + this.run.resWindowBonus;
   }
 
+  /** 回响同步：本体与残影距离 ≤ syncRange（M3 新增，奖励紧凑走位） */
+  isSynced(): boolean {
+    const dx = this.player.x - this.echo.x;
+    const dy = this.player.y - this.echo.y;
+    const r = BAL.resonance.syncRange;
+    return dx * dx + dy * dy <= r * r;
+  }
+
+  /**
+   * 同步叠加增益（M3）：连续同步时间越长越高，上限 syncMaxBonus。
+   * 同时作用于伤害与共鸣值（见 combat.ts），断同步即清零——"承诺编队"才有满额。
+   */
+  syncBonus(): number {
+    // 密库「同步上限 +15%」（M3）抬高 ramp 上限
+    const cap = BAL.resonance.syncMaxBonus * (1 + this.meta.syncBonusPct);
+    return Math.min(cap, this.syncStreak * BAL.resonance.syncPerSec);
+  }
+
+  /** 同步 ramp 进度 0–1（回响阻尼等"按 ramp 比例生效"的效果用） */
+  syncRamp(): number {
+    const cap = BAL.resonance.syncMaxBonus * (1 + this.meta.syncBonusPct);
+    return cap > 0 ? this.syncBonus() / cap : 0;
+  }
+
   /** 事件/系统用的对外伤害入口 */
   applyDamagePublic(e: Enemy, base: number, src: 'body' | 'echo', opts: { kb?: number; noRes?: boolean } = {}): void {
     applyDamage(this, e, base, src, opts);
@@ -875,10 +940,25 @@ export class World {
     return { x: e.bx[idx]!, y: e.by[idx]! };
   }
 
-  /** 当前残影延迟（含 15:00 双生回响兽的"延迟领域" +2s，GDD §15） */
+  /** 当前残影延迟（含 15:00 双生回响兽的"延迟领域" +2s 与 20:00 诺诺领域内 +2s，GDD §15） */
   echoDelayNow(): number {
-    const twinField = this.boss !== null && this.boss.active && this.boss.bossKind === 'twin';
-    return this.run.echoDelayFrames + (twinField ? 120 : 0);
+    const b = this.boss;
+    if (b === null || !b.active) return this.run.echoDelayFrames;
+    if (b.bossKind === 'twin') return this.run.echoDelayFrames + 120;
+    if (b.bossKind === 'weaver' && b.phase >= 2 && this.inWeaverDomain()) {
+      return this.run.echoDelayFrames + BAL.weaver.domainExtraFrames;
+    }
+    return this.run.echoDelayFrames;
+  }
+
+  /** 玩家是否处于诺诺的「静止织机」领域内（P2 起展开，半径 300） */
+  inWeaverDomain(): boolean {
+    const b = this.boss;
+    if (b === null || !b.active || b.bossKind !== 'weaver' || b.phase < 2) return false;
+    const dx = this.player.x - b.x;
+    const dy = this.player.y - b.y;
+    const r = BAL.weaver.domainR;
+    return dx * dx + dy * dy <= r * r;
   }
 
   /** 地图危险区刷新（崩坏之环的时潮涡流：停留即受伤 + 减速，GDD §6.7） */
@@ -914,7 +994,14 @@ export class World {
       const rr = o.r + p.radius;
       const d2 = dx * dx + dy * dy;
       if (d2 >= rr * rr) continue;
-      const d = Math.sqrt(d2) || 1;
+      const d = Math.sqrt(d2);
+      if (d < 0.001) {
+        // 退化情形（玩家正好落在障碍圆心，推出方向无法从位置差得到）：取固定方向推出，
+        // 否则 dx/d 会退化成 0 向量 → 玩家被永久卡在障碍里（冒烟测试曾因此偶发失败）
+        p.x = o.x + rr;
+        p.y = o.y;
+        continue;
+      }
       p.x = o.x + (dx / d) * rr;
       p.y = o.y + (dy / d) * rr;
     }

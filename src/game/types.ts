@@ -52,6 +52,11 @@ export interface Enemy {
   /** 共鸣标记：上一跳来源与时间 */
   lastHitSrc: Src | null;
   lastHitT: number;
+  /** 上一跳的来源位置（用于判定"双影夹击"：两侧夹角 >120°） */
+  lastHitX: number;
+  lastHitY: number;
+  /** Boss 阶段序号（时间织造者·诺诺：1/2/3，其余 Boss 恒为 0） */
+  phase: number;
   /** 时钟针对该敌人的接触冷却（本体/残影各一） */
   orbitCdB: number;
   orbitCdE: number;
@@ -80,9 +85,11 @@ export interface Bullet {
   retarget: number;
   target: Enemy | null;
   src: Src;
-  kind: 'bolt' | 'butterfly' | 'enemy';
+  kind: 'bolt' | 'butterfly' | 'enemy' | 'boomerang';
   /** 进化体「贯穿命运之矢」：该弹必暴 */
   forceCrit: boolean;
+  /** 回旋镖回程标记（M3） */
+  returning: boolean;
   /** 归属武器 id（用于进化判定的击杀叠伤） */
   weaponId: string;
   sprite: Sprite;
@@ -119,7 +126,7 @@ export interface Hazard {
   dps: number;
   /** 玩家在区内的减速系数（1 = 不减速） */
   slowFactor: number;
-  kind: 'blade' | 'sand' | 'vortex';
+  kind: 'blade' | 'sand' | 'vortex' | 'web';
   color: number;
   sprite: Sprite;
 }
@@ -195,6 +202,21 @@ export interface PlayerStats {
   area: number;
   /** 残影攻击范围倍率（默认 1；共鸣 A/B 实验与后续被动用） */
   echoRange: number;
+  // ---- M3 新增被动派生属性 ----
+  /** 残影伤害加成（被动「回响」） */
+  echoDmg: number;
+  /** 拾取半径加成 */
+  pickup: number;
+  /** 受伤减免 */
+  armor: number;
+  /** 每秒生命回复 */
+  regen: number;
+  /** 经验获取加成 */
+  greed: number;
+  /** 敌人移速阻尼（全局减速比例） */
+  damp: number;
+  /** 同步爆发伤害加成 */
+  burstDmg: number;
 }
 
 export interface PlayerState {
@@ -229,7 +251,7 @@ export interface PlayerState {
 export interface EchoEvent {
   frame: number;
   id: string;
-  kind: 'bolt' | 'pulse' | 'butterfly' | 'chain';
+  kind: 'bolt' | 'pulse' | 'butterfly' | 'chain' | 'pendulum' | 'boomerang' | 'chime';
   x: number;
   y: number;
   ang: number;
@@ -276,6 +298,11 @@ export interface RunStats {
   altarReached: number;
   altarCrafted: number;
   eventsFired: number;
+  /** M3：双影夹击次数 与 回响同步累计时长（秒）——衡量"编队走位"水平 */
+  pincerHits: number;
+  syncTime: number;
+  /** M3：最长连续同步时长（秒）——决定同步 ramp 增益的实际上限 */
+  syncMaxStreak: number;
 }
 
 export interface WorldFlags {
@@ -284,4 +311,6 @@ export interface WorldFlags {
   moveToasted: boolean;
   rushToasted: boolean;
   firstEliteToasted: boolean;
+  /** M3：首次双影夹击的教学提示只弹一次 */
+  pincerToasted: boolean;
 }

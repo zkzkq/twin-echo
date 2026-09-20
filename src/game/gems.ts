@@ -69,7 +69,10 @@ export function updateGems(w: World, dt: number): void {
     const dx = p.x - g.x;
     const dy = p.y - g.y;
     const d = Math.hypot(dx, dy) || 1;
-    if (!g.magnet && d <= p.pickupR) g.magnet = true;
+    // 回响吸取（M3）：同步 ramp 同时放大拾取半径（最高 +60%）——让"留在编队里"也能吃到经验
+    // 被动「磁引」（M3）：固定拾取半径加成
+    const pr = p.pickupR * (1 + p.stats.pickup) * (1 + w.syncBonus() * BAL.resonance.syncPickupPct);
+    if (!g.magnet && d <= pr) g.magnet = true;
     if (g.magnet) {
       g.vx += (dx / d) * BAL.player.magnetAccel * dt;
       g.vy += (dy / d) * BAL.player.magnetAccel * dt;

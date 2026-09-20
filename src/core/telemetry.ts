@@ -39,6 +39,12 @@ export interface RunSummary {
   altarReached: number;
   altarCrafted: number;
   eventsFired: number;
+  /** M3「编队走位」：双影夹击次数 / 夹击频率 / 回响同步累计秒数 / 同步时间占比(%) */
+  pincerHits: number;
+  pincerPerMin: number;
+  syncTime: number;
+  syncPct: number;
+  syncMaxStreak: number;
   deathX: number;
   deathY: number;
 }
@@ -58,6 +64,7 @@ const SUMMARY_COLS: (keyof RunSummary)[] = [
   'resonanceHits', 'coverage', 'resonancePerMin', 'bursts', 'elitesSpawned', 'elitesKilled', 'bossKills',
   'damageTaken', 'peakEnemies', 'revives', 'skipped', 'rerolls', 'sand', 'weapons', 'passives',
   'crystals', 'evolutions', 'altarReached', 'altarCrafted', 'eventsFired', 'deathX', 'deathY',
+  'pincerHits', 'pincerPerMin', 'syncTime', 'syncPct', 'syncMaxStreak',
 ];
 
 function esc(v: unknown): string {

@@ -6,34 +6,43 @@ export interface MetaBonuses {
   levelHealBonus: number;
   windowBonus: number;
   gaugeGainPct: number;
+  gaugeStart: number;
   resDmgPct: number;
+  pincerDmgPct: number;
+  syncBonusPct: number;
   sandPct: number;
   winSandPct: number;
+  xpPct: number;
   rerollBonus: number;
+  choiceBonus: number;
   critBonus: number;
   startWeaponLv: number;
+  echoDmgPct: number;
   burstRadiusPct: number;
   burstDmgPct: number;
   burstInvulnBonus: number;
   pickupPct: number;
   moveSpdPct: number;
   cdPct: number;
+  armorPct: number;
+  regenPerSec: number;
 }
 
 export const EMPTY_BONUSES: MetaBonuses = {
-  hpBonus: 0, levelHealBonus: 0, windowBonus: 0, gaugeGainPct: 0, resDmgPct: 0,
-  sandPct: 0, winSandPct: 0, rerollBonus: 0, critBonus: 0, startWeaponLv: 0,
-  burstRadiusPct: 0, burstDmgPct: 0, burstInvulnBonus: 0, pickupPct: 0, moveSpdPct: 0, cdPct: 0,
+  hpBonus: 0, levelHealBonus: 0, windowBonus: 0, gaugeGainPct: 0, gaugeStart: 0, resDmgPct: 0,
+  pincerDmgPct: 0, syncBonusPct: 0, sandPct: 0, winSandPct: 0, xpPct: 0, rerollBonus: 0,
+  choiceBonus: 0, critBonus: 0, startWeaponLv: 0, echoDmgPct: 0, burstRadiusPct: 0,
+  burstDmgPct: 0, burstInvulnBonus: 0, pickupPct: 0, moveSpdPct: 0, cdPct: 0, armorPct: 0, regenPerSec: 0,
 };
 
-/** 由已解锁节点集合汇总增益 */
+/** 由已解锁节点集合汇总增益（每个节点最多 2 条效果） */
 export function computeBonuses(unlocked: readonly string[]): MetaBonuses {
   const b: MetaBonuses = { ...EMPTY_BONUSES };
   for (const id of unlocked) {
     const node = metaNodeById(id);
     if (!node) continue;
-    const key = node.effect as MetaEffectKey;
-    b[key] += node.value;
+    b[node.effect as MetaEffectKey] += node.value;
+    if (node.effect2 && node.value2 !== undefined) b[node.effect2] += node.value2;
   }
   return b;
 }

@@ -59,6 +59,7 @@ export function spawnEnemy(w: World, kind: EnemyKind, x: number, y: number, elit
   e.ay = 0;
   e.lastHitSrc = null;
   e.lastHitT = -99;
+  e.phase = 0;
   e.orbitCdB = 0;
   e.orbitCdE = 0;
   e.trailCd = 0;
@@ -73,7 +74,7 @@ export function spawnEnemy(w: World, kind: EnemyKind, x: number, y: number, elit
     e.xpVal = 0;
     e.radius = def.radius;
     e.armor = def.armor;
-    e.tint = bossKind === 'hourglass' ? 0xc9a227 : 0xd95f4a;
+    e.tint = bossKind === 'hourglass' ? 0xc9a227 : bossKind === 'weaver' ? 0x9a6bff : 0xd95f4a;
     e.st = 0;
     e.stT = 2.0;
     e.pat = 0;
@@ -158,7 +159,21 @@ export function updateEnemies(w: World, dt: number): void {
       if (Math.abs(e.ky) < 1) e.ky = 0;
     }
 
-    const slow = e.slowT > 0 ? BAL.burst.slowFactor : 1;
+    // 回响阻尼（M3「编队走位」的生存收益）：同步 ramp 越高，残影周围的敌人越慢（最高 -25%）。
+    // 目的：让"贴住残影"在**防守上**也成立——否则编队流永远打不过"远离怪群贪宝石"（见调参记录 §23）。
+    let damping = 1;
+    const ramp = w.syncRamp();
+    if (ramp > 0) {
+      const ex2 = w.echo.x - e.x;
+      const ey2 = w.echo.y - e.y;
+      const ed2 = ex2 * ex2 + ey2 * ey2;
+      const R = BAL.resonance.dampRange;
+      if (ed2 <= R * R) {
+        const near = 1 - Math.sqrt(ed2) / R; // 越靠近残影，阻尼越强
+        damping = 1 - BAL.resonance.dampMax * ramp * (0.4 + 0.6 * near);
+      }
+    }
+    const slow = (e.slowT > 0 ? BAL.burst.slowFactor : 1) * damping * (1 - p.stats.damp); // 被动「滞时」（M3）
     const dx = p.x - e.x;
     const dy = p.y - e.y;
     const dist = Math.hypot(dx, dy) || 1;
@@ -250,7 +265,7 @@ export function updateEnemies(w: World, dt: number): void {
   }
 }
 
-/** Boss 技能分发（GDD §6.6）。minute=分针兽；hourglass=时漏巨像；twin/weaver 为 M3 占位（复用巨像行为） */
+/** Boss 技能分发（GDD §6.6）。minute=分针兽；hourglass=时漏巨像；twin=双生回响兽；weaver=时间织造者·诺诺 */
 function updateBoss(w: World, e: Enemy, dt: number, nx: number, ny: number, slow: number): void {
   if (e.bossKind === 'hourglass') {
     updateHourglass(w, e, dt, nx, ny, slow);
@@ -261,10 +276,168 @@ function updateBoss(w: World, e: Enemy, dt: number, nx: number, ny: number, slow
     return;
   }
   if (e.bossKind === 'weaver') {
-    updateHourglass(w, e, dt, nx, ny, slow); // 20:00 诺诺：M3 后半实装三阶段，暂用巨像行为
+    updateWeaver(w, e, dt, nx, ny, slow);
     return;
   }
   updateMinute(w, e, dt, nx, ny, slow);
+}
+
+/**
+ * 终 Boss 时间织造者·诺诺（20:00）：三阶段 + 领域（GDD §6.6）。
+ * 阶段按 HP 阈值切换（66% / 33%），每次切换有一次"织梭停顿"与冲击环（onEvent 'boss-phase'）。
+ *   P1 织梭（>66%）  ：错位环形弹幕 + 织梭突进——先让玩家学会她的节奏；
+ *   P2 静止织机（33–66%）：展开半径 300 的领域（world.echoDelayNow 在圈内 +2s）+ 召唤织蛛；
+ *   P3 终末织梭（<33%）：全屏扩散弹幕波（3 层）+ 高速突进 + 密集召唤。
+ * 领域是**可读可躲**的减益：退到圈外输出即可规避，代价是与 Boss 拉开距离、命中率下降。
+ */
+function updateWeaver(w: World, e: Enemy, dt: number, nx: number, ny: number, slow: number): void {
+  const W = BAL.weaver;
+  e.stT -= dt;
+  e.tele = false;
+  e.sprite.rotation += dt * (e.phase >= 3 ? 1.3 : 0.6);
+
+  // ---- 阶段切换（可跳过中间阶段：一次高伤害爆发直接打进 P3） ----
+  const pct = e.maxHp > 0 ? e.hp / e.maxHp : 1;
+  const want = pct <= W.phase3At ? 3 : pct <= W.phase2At ? 2 : 1;
+  if (want > e.phase) {
+    e.phase = want;
+    e.st = 9;
+    e.stT = 1.1;
+    e.auraCd = 0;
+    w.spawnRing(e.x, e.y, 20, want >= 3 ? 900 : 620, 0.7, want >= 3 ? 0xff5c5c : 0xffd77a, 1);
+    for (let i = 0; i < 30; i++) {
+      w.spawnParticle(e.x, e.y, i % 2 === 0 ? 0xffd77a : 0x9a6bff, w.rng.range(120, 420), 0.55, w.rng.range(3, 6));
+    }
+    w.onEvent('boss-phase');
+    return;
+  }
+
+  // ---- 领域边界（P2 起常驻）：每 0.4s 描一圈，让"圈内残影被织慢"始终可见 ----
+  if (e.phase >= 2) {
+    e.auraCd -= dt;
+    if (e.auraCd <= 0) {
+      e.auraCd = 0.4;
+      w.spawnRing(e.x, e.y, W.domainR, W.domainR, 0.42, 0x9a6bff, 0.38);
+      for (let i = 0; i < 3; i++) {
+        const a = w.rng.angle();
+        w.spawnParticle(e.x + Math.cos(a) * W.domainR, e.y + Math.sin(a) * W.domainR, 0x9a6bff, 12, 0.45, 2.4);
+      }
+    }
+  }
+
+  const dashSpeed = e.phase >= 3 ? 720 : 620;
+  switch (e.st) {
+    case 0: // 追击，按 pat 选下一个招式
+      e.x += nx * e.speed * slow * dt;
+      e.y += ny * e.speed * slow * dt;
+      if (e.stT <= 0) {
+        const rot = (e.pat + 3) % 3;
+        if (e.phase >= 3) {
+          e.st = rot === 0 ? 5 : rot === 1 ? 3 : 7;
+          e.stT = 0.55;
+        } else if (e.phase === 2) {
+          e.st = rot === 0 ? 1 : rot === 1 ? 3 : 7;
+          e.stT = 0.6;
+        } else {
+          e.st = rot === 0 ? 1 : 3;
+          e.stT = 0.7;
+        }
+      }
+      break;
+    case 1: // 弹幕前摇
+      e.tele = true;
+      if (e.stT <= 0) {
+        e.st = 2;
+        e.ax = 3;          // 波数
+        e.ay = 0;          // 已发波数
+        e.fireCd = 0;
+      }
+      break;
+    case 2: // 错位环形弹幕（每波相位错开，逼玩家持续位移）
+      if (e.fireCd <= 0) {
+        e.fireCd = 0.34;
+        ringBullets(
+          w, e,
+          Math.max(8, Math.round(BAL.boss.barrageCount * w.run.bossBulletCountMult)),
+          BAL.boss.bulletSpeed * w.run.bossBulletSpeedMult,
+          Math.max(3, Math.round(BAL.boss.bulletDmg * w.run.bossBulletDmgMult)),
+          (e.ay * Math.PI) / 7,
+        );
+        e.ay++;
+        if (e.ay >= e.ax) {
+          e.st = 0;
+          e.stT = e.phase >= 3 ? 1.2 : 1.8;
+          e.pat = (e.pat + 1) % 3;
+        }
+      }
+      break;
+    case 3: // 突进前摇（结束瞬间锁定方向）
+      e.tele = true;
+      if (e.stT <= 0) {
+        e.ax = nx;
+        e.ay = ny;
+        e.st = 4;
+        e.stT = 0.7;
+      }
+      break;
+    case 4: // 织梭突进
+      e.x += e.ax * dashSpeed * slow * dt;
+      e.y += e.ay * dashSpeed * slow * dt;
+      if (e.stT <= 0) {
+        e.st = 0;
+        e.stT = e.phase >= 3 ? 1.0 : 2.0;
+        e.pat = (e.pat + 1) % 3;
+      }
+      break;
+    case 5: // P3 全屏波前摇
+      e.tele = true;
+      if (e.stT <= 0) {
+        e.st = 6;
+        e.ax = W.waveCount;
+        e.ay = 0;
+        e.fireCd = 0;
+      }
+      break;
+    case 6: // P3 全屏扩散弹幕波
+      if (e.fireCd <= 0) {
+        e.fireCd = W.waveGap;
+        ringBullets(
+          w, e,
+          Math.max(10, Math.round(BAL.boss.barrageCount * 1.2 * w.run.bossBulletCountMult)),
+          (BAL.boss.bulletSpeed + 26 * e.ay) * w.run.bossBulletSpeedMult,
+          Math.max(3, Math.round(BAL.boss.bulletDmg * w.run.bossBulletDmgMult)),
+          e.ay * 0.21,
+        );
+        w.spawnRing(e.x, e.y, 30, 520 + e.ay * 90, 0.4, 0xff5c5c, 0.7);
+        e.ay++;
+        if (e.ay >= e.ax) {
+          e.st = 0;
+          e.stT = 1.5;
+          e.pat = 1;
+        }
+      }
+      break;
+    case 7: // 召唤织蛛（P3 数量更多）
+      if (e.stT <= 0) {
+        const n = e.phase >= 3 ? 12 : 8;
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * Math.PI * 2;
+          spawnEnemy(w, 'moth', e.x + Math.cos(a) * 90, e.y + Math.sin(a) * 90);
+        }
+        w.spawnRing(e.x, e.y, 20, 170, 0.4, 0x9a6bff, 0.85);
+        e.st = 0;
+        e.stT = 1.8;
+        e.pat = (e.pat + 1) % 3;
+      }
+      break;
+    case 9: // 阶段转换停顿（不移动、不出招）
+      if (e.stT <= 0) {
+        e.st = 0;
+        e.stT = 0.7;
+        e.pat = 0;
+      }
+      break;
+  }
 }
 
 /**

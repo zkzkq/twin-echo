@@ -16,6 +16,7 @@ import { DAILY_FIRST_CLEAR_SAND, dailyCharacterId, dailyKey, dailySeed, dailyMod
 import { MAPS, mapById, mapUnlocked } from '../config/maps';
 import { DIFFICULTIES } from '../config/difficulty';
 import type { Obstacle } from './terrain';
+import { CODEX } from '../config/bestiary';
 import { META_BRANCHES, META_NODES, metaCost, metaPrereq } from '../config/meta';
 import type { EvolutionDef } from '../config/items';
 
@@ -40,6 +41,8 @@ interface SaveData {
   dailyCleared: string[];
   /** M3：已通关的地图 id（地图解锁链：通关第 i 张 → 解锁第 i+1 张） */
   mapsBeaten: string[];
+  /** M3：图鉴击杀统计（种类 id → 累计击杀数；有记录即视为已解锁） */
+  codex: Record<string, number>;
 }
 
 interface DailyRecord {
@@ -50,7 +53,7 @@ interface DailyRecord {
 
 const SAVE_KEY = 'twinEcho.save';
 
-type GameState = 'title' | 'run' | 'levelup' | 'pause' | 'result' | 'altar' | 'meta' | 'setup';
+type GameState = 'title' | 'run' | 'levelup' | 'pause' | 'result' | 'altar' | 'meta' | 'setup' | 'codex';
 
 export class Game {
   readonly app = new Application();
@@ -72,6 +75,8 @@ export class Game {
   private altarOptions: EvolutionDef[] = [];
   /** 打开密库前的界面（用于返回） */
   private metaReturn: GameState = 'title';
+  /** M3：图鉴面板返回状态 */
+  private codexReturn: GameState = 'title';
   /** 打开配置面板前的界面（用于返回） */
   private setupReturn: GameState = 'title';
   /** 本局是否为每日挑战（用于结算奖励与榜单） */
@@ -91,7 +96,7 @@ export class Game {
 
   private saved: SaveData = {
     sand: 0, runs: 0, bestTime: 0, bestWin: false, firstRun: true, nodes: [],
-    chars: [], challenges: [], bestParadox: 0, dailyBest: {}, dailyCleared: [], mapsBeaten: [],
+    chars: [], challenges: [], bestParadox: 0, dailyBest: {}, dailyCleared: [], mapsBeaten: [], codex: {},
   };
   /** M3：本局配置（角色 / 悖论 / 地图 / 是否每日挑战） */
   private runOptions: RunOptions = { character: 'otto', paradox: 0, daily: false, map: 'plain' };
@@ -142,6 +147,8 @@ export class Game {
       altarSkip: () => this.closeAltar(),
       openMeta: () => this.openMeta(),
       closeMeta: () => this.closeMeta(),
+      openCodex: () => this.openCodex(),
+      closeCodex: () => this.closeCodex(),
       buyMeta: (id) => this.buyMeta(id),
       exportSave: () => this.exportSave(),
       importSave: () => this.importSave(),
@@ -228,6 +235,9 @@ export class Game {
         break;
       case 'meta':
         if (k === 'escape' || k === 'enter') this.closeMeta();
+        break;
+      case 'codex':
+        if (k === 'escape' || k === 'enter' || k === 'c') this.closeCodex();
         break;
       case 'pause':
         if (k === 'p' || k === 'Escape' || k === 'Enter') this.togglePause(false);
@@ -510,12 +520,30 @@ export class Game {
         if (this.world.boss?.bossKind === 'twin') {
           this.ui.toast('延迟领域：你的残影延迟 +2s —— 它会沿你 4 秒前的走法攻击，别站在自己走过的路上', 'red');
         }
+        // 时间织造者·诺诺：三阶段，先把 P1 的读法讲清楚
+        if (this.world.boss?.bossKind === 'weaver') {
+          this.ui.toast('三阶段终 Boss：血条每掉三分之一就换一套织法，注意她脚下的紫圈', 'red');
+        }
         this.telemetry.log(this.world.time, 'boss_spawn', { boss: this.bossName() });
         break;
       }
       case 'boss-dead':
         this.ui.toast(`${this.bossName() || 'Boss'} 已被抹除——掉落回响结晶 ×2`, 'cyan');
         break;
+      case 'boss-phase': {
+        // 时间织造者·诺诺的阶段性机制提示（M3）
+        const b = this.world.boss;
+        const ph = b?.phase ?? 1;
+        if (ph === 2) {
+          this.ui.toast('静止织机展开——紫圈内你的残影延迟 +2s，配合会被拆散；退到圈外即可规避', 'red');
+        } else if (ph === 3) {
+          this.ui.toast('终末织梭——她开始狂暴：全屏弹幕波 + 高速突进', 'red');
+        }
+        this.telemetry.log(this.world.time, 'boss_phase', {
+          boss: this.bossName(), phase: ph, hpPct: b ? Math.round((b.hp / b.maxHp) * 100) : 0,
+        });
+        break;
+      }
       case 'elite-dead':
         this.ui.toast('精英崩解——掉落回响结晶 ×1（进化材料）');
         if (!this.world.flags.firstEliteToasted) {
@@ -530,6 +558,13 @@ export class Game {
           `共鸣击！你和残影在 1 秒内命中了同一个敌人（伤害 ×${BAL.resonance.dmgMult} · 共鸣值 +${BAL.resonance.gaugeGain}）`,
           'cyan',
         );
+        break;
+      case 'first-pincer':
+        this.ui.toast(
+          `双影夹击！敌人被你夹在本体与残影之间（夹角 >120°）—— 伤害 ×${BAL.resonance.dmgMult * BAL.resonance.pincerDmgMult} · 共鸣值 ×${BAL.resonance.pincerGaugeMult}`,
+          'gold',
+        );
+        this.telemetry.log(this.world.time, 'pincer_first', { pincerHits: this.world.stats.pincerHits });
         break;
       case 'gauge-full':
         this.ui.toast('共鸣值已满——按 空格 释放同步爆发！', 'cyan');
@@ -783,6 +818,19 @@ export class Game {
     this.state = this.metaReturn;
   }
 
+  /** 图鉴（M3）：标题页可开，暂停页也能查（遇到新敌人后随时想看一眼） */
+  openCodex(): void {
+    this.codexReturn = this.state;
+    this.state = 'codex';
+    this.ui.showCodex(CODEX, this.saved.codex, CODEX.map((c) => c.id));
+  }
+
+  private closeCodex(): void {
+    if (this.state !== 'codex') return;
+    this.ui.hideCodex();
+    this.state = this.codexReturn;
+  }
+
   private metaView(): Parameters<UI['showMeta']>[0] {
     const unlocked = this.saved.nodes;
     return {
@@ -1001,11 +1049,17 @@ export class Game {
       }
     }
 
+    // M3：图鉴击杀统计并入存档（遇到即解锁）
+    for (const [k, v] of w.codex) this.saved.codex[k] = (this.saved.codex[k] ?? 0) + v;
+
     this.saved.firstRun = false;
     this.save();
 
     const cov = st.hits > 0 ? Math.round((st.resHits / st.hits) * 1000) / 10 : 0;
     const resonancePerMin = w.time > 0 ? Math.round((st.resHits / w.time) * 60 * 10) / 10 : 0;
+    // M3：编队走位诊断量（夹击频率 / 同步时间占比）
+    const pincerPerMin = w.time > 0 ? Math.round((st.pincerHits / w.time) * 60 * 10) / 10 : 0;
+    const syncPct = w.time > 0 ? Math.round((st.syncTime / w.time) * 1000) / 10 : 0;
     const evolutions = [...w.player.evolutions].join('|');
     this.telemetry.log(w.time, 'run_meta', {
       character: w.run.character, paradox: w.run.paradox, daily: this.runIsDaily,
@@ -1037,6 +1091,11 @@ export class Game {
       altarReached: st.altarReached,
       altarCrafted: st.altarCrafted,
       eventsFired: st.eventsFired,
+      pincerHits: st.pincerHits,
+      pincerPerMin,
+      syncTime: Math.round(st.syncTime * 10) / 10,
+      syncPct,
+      syncMaxStreak: Math.round(st.syncMaxStreak * 10) / 10,
       deathX: Math.round(w.player.x),
       deathY: Math.round(w.player.y),
     });
@@ -1049,6 +1108,10 @@ export class Game {
       resHits: st.resHits,
       hits: st.hits,
       resonancePerMin,
+      pincerHits: st.pincerHits,
+      syncPct,
+      syncMaxStreak: Math.round(st.syncMaxStreak * 10) / 10,
+      syncBonusPct: Math.round(w.syncBonus() * 100),
       bursts: st.bursts,
       elites: st.elitesKilled,
       bossKills: st.bossKills,

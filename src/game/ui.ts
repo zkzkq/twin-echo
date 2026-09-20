@@ -19,6 +19,8 @@ export interface UIHandlers {
   altarSkip(): void;
   openMeta(): void;
   closeMeta(): void;
+  openCodex(): void;
+  closeCodex(): void;
   buyMeta(id: string): void;
   exportSave(): void;
   importSave(): void;
@@ -73,6 +75,12 @@ export interface ResultData {
   hits: number;
   /** 主 KPI（M2 口径）：共鸣击频率 = 共鸣击 / 分钟 */
   resonancePerMin: number;
+  /** M3「编队走位」两个诊断量：双影夹击次数 / 回响同步时间占比(%) */
+  pincerHits: number;
+  syncPct: number;
+  /** M3：最长连续同步时长（秒）与结算时对应的 ramp 增益(%) */
+  syncMaxStreak: number;
+  syncBonusPct: number;
   bursts: number;
   elites: number;
   bossKills: number;
@@ -116,6 +124,12 @@ export class UI {
   private bossfill = $('bossfill');
   private bossname = $('bossname');
   private crystaltext = $('crystaltext');
+  private synctext = $('synctext');
+  private domaintext = $('domaintext');
+  /** 同步态缓存：只在状态翻转时改 className（避免每帧写 DOM 样式） */
+  private syncShown = false;
+  /** 领域态缓存（诺诺的静止织机） */
+  private domainShown = false;
   private altarhint = $('altarhint');
   private eventtext = $('eventtext');
   private altar = $('altar');
@@ -134,6 +148,10 @@ export class UI {
   private titleConfig = $('titleConfig');
   private toasts = $('toasts');
   private title = $('title');
+  /** M3 图鉴 */
+  private codex = $('codex');
+  private codexList = $('codexList');
+  private codexProgress = $('codexProgress');
   private levelup = $('levelup');
   private cards = $('cards');
   private pause = $('pause');
@@ -161,6 +179,8 @@ export class UI {
     $('btnMetaTitle').onclick = () => h.openMeta();
     $('btnMetaResult').onclick = () => h.openMeta();
     $('btnMetaClose').onclick = () => h.closeMeta();
+    $('btnCodexTitle').onclick = () => h.openCodex();
+    $('btnCodexClose').onclick = () => h.closeCodex();
     $('btnMetaExport').onclick = () => h.exportSave();
     $('btnMetaImport').onclick = () => h.importSave();
     $('btnSetup').onclick = () => h.openSetup();
@@ -276,6 +296,35 @@ export class UI {
   hideMeta(): void {
     this.meta.classList.add('hidden');
   }
+
+  /** 图鉴（M3）：未遭遇时只显示剪影，遭遇后展示数值、行为与应对提示 */
+  showCodex(entries: readonly { kind: string; name: string; glyph: string; color: number; stats: string; behavior: string; tip: string }[], kills: Record<string, number>, ids: readonly string[]): void {
+    let unlocked = 0;
+    this.codexList.innerHTML = entries
+      .map((e, i) => {
+        const n = kills[ids[i]!] ?? 0;
+        const has = n > 0;
+        if (has) unlocked++;
+        const kindLabel = e.kind === 'boss' ? 'BOSS' : e.kind === 'elite' ? '精英' : '杂兵';
+        const hex = `#${e.color.toString(16).padStart(6, '0')}`;
+        return `<div class="codexcard ${has ? '' : 'locked'}">
+          <div class="cx-head">
+            <div class="cx-glyph" style="color:${hex};border-color:${hex}66">${has ? e.glyph : '？'}</div>
+            <span class="cx-name">${has ? e.name : '未遭遇'}</span>
+            <span class="cx-kind">${kindLabel}</span>
+          </div>
+          ${has ? `<div class="cx-stats">${e.stats}</div><div class="cx-behavior">${e.behavior}</div><div class="cx-tip">▸ ${e.tip}</div>` : '<div class="cx-behavior">在局内遇到并击杀后解锁</div>'}
+          <div class="cx-kills">累计击杀 ${n}</div>
+        </div>`;
+      })
+      .join('');
+    this.codexProgress.textContent = `${unlocked} / ${entries.length}`;
+    this.codex.classList.remove('hidden');
+  }
+
+  hideCodex(): void {
+    this.codex.classList.add('hidden');
+  }
   showAltar(recipes: { name: string; desc: string; crystals: number }[]): void {
     this.altarCards.innerHTML = recipes
       .map(
@@ -347,6 +396,37 @@ export class UI {
     }
     this.altarhint.textContent = hint;
     this.eventtext.textContent = w.eventKind ? `${eventLabel(w.eventKind)} ${Math.ceil(w.eventT)}s` : '';
+
+    // 回响同步（M3）：本体贴近残影 → 全局增益；指示器亮起让"编队状态"随时可见
+    const synced = w.isSynced();
+    if (synced !== this.syncShown) {
+      this.syncShown = synced;
+      this.synctext.className = synced ? 'syncOn' : 'syncOff';
+    }
+    if (synced) {
+      const b = Math.round(w.syncBonus() * 100);
+      const def = Math.round(BAL.resonance.syncDefMax * w.syncRamp() * 100);
+      const damp = Math.round(BAL.resonance.dampMax * w.syncRamp() * 100);
+      this.synctext.textContent = `⬤ 回响同步 伤害/共鸣 +${b}% · 吸取 +${b}% · 受伤 -${def}% · 阻尼 -${damp}%`;
+    } else {
+      const d = Math.round(Math.hypot(p.x - w.echo.x, p.y - w.echo.y));
+      this.synctext.textContent = `回响分离 ${d}px`;
+    }
+
+    // 时间织造者·诺诺的「静止织机」领域（M3）：圈内残影延迟 +2s，必须让玩家看得见
+    const wb = w.boss;
+    if (wb !== null && wb.active && wb.bossKind === 'weaver' && wb.phase >= 2) {
+      const inD = w.inWeaverDomain();
+      this.domaintext.textContent = inD ? '⚠ 静止织机：残影延迟 +2s（退出紫圈可解除）' : '静止织机（圈外安全）';
+      if (inD !== this.domainShown) {
+        this.domainShown = inD;
+        this.domaintext.className = inD ? 'inDomain' : '';
+      }
+    } else if (this.domaintext.textContent !== '') {
+      this.domaintext.textContent = '';
+      this.domaintext.className = '';
+      this.domainShown = false;
+    }
   }
 
   renderSlots(w: World): void {
@@ -433,7 +513,9 @@ export class UI {
     }
     const cov = w.stats.hits > 0 ? Math.round((w.stats.resHits / w.stats.hits) * 100) : 0;
     const perMin = w.time > 0 ? Math.round((w.stats.resHits / w.time) * 60) : 0;
+    const syncPct = w.time > 0 ? Math.round((w.stats.syncTime / w.time) * 100) : 0;
     html += `<div style="margin-top:10px;color:var(--dim)">共鸣击频率 <b class="c">${perMin}/分</b>（KPI ${BAL.resonance.perMinTarget[0]}–${BAL.resonance.perMinTarget[1]}） · 覆盖率 ${cov}% · 击杀 ${w.stats.kills} · 存活 ${fmtTime(w.time)}</div>`;
+    html += `<div style="color:var(--dim)">编队：双影夹击 <b class="a">${w.stats.pincerHits}</b> 次 · 回响同步 <b class="a">${syncPct}%</b> 时间（贴住残影 +${Math.round(BAL.resonance.syncDmgPct * 100)}% 伤害）</div>`;
     this.pauseStats.innerHTML = html;
     this.pause.classList.remove('hidden');
   }
@@ -458,6 +540,9 @@ export class UI {
       // M2 主 KPI：共鸣击频率（覆盖率降级为诊断量，见 GDD §5.2 变更记录）
       stat(`${d.resonancePerMin}/分`, `共鸣击频率（目标 ${lo}–${hi}）`, true),
       stat(`${cov}%`, '共鸣覆盖率（诊断）'),
+      // M3 新增：编队走位诊断量
+      stat(`${d.pincerHits}`, `双影夹击（×${BAL.resonance.pincerDmgMult} 伤害）`, d.pincerHits > 0),
+      stat(`${d.syncPct}%`, `回响同步时间（连续 ${d.syncMaxStreak}s → +${Math.round(d.syncBonusPct)}%）`),
       stat(`${d.bursts}`, '同步爆发'),
       stat(d.evolutions || '—', '武器进化'),
       stat(`${d.crystals}`, '回响结晶'),

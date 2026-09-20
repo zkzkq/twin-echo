@@ -108,6 +108,14 @@ html, body {
 #crystaltext { color: var(--gold); font-weight: 700; }
 #altarhint { color: var(--cyan-b); }
 #eventtext { color: var(--amber-b); }
+/* 回响同步指示（M3）：分离=暗、同步=亮金 + 呼吸 */
+#synctext { font-weight: 700; letter-spacing: 1px; }
+#synctext.syncOff { color: #6b7480; }
+#synctext.syncOn { color: var(--gold); text-shadow: 0 0 10px rgba(255, 210, 62, 0.65); animation: syncpulse 0.9s ease-in-out infinite; }
+@keyframes syncpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+/* 诺诺的「静止织机」领域警告：站在紫圈内时闪红 */
+#domaintext { color: #c9a2ff; font-weight: 700; }
+#domaintext.inDomain { color: #ff8ad0; text-shadow: 0 0 10px rgba(154, 107, 255, 0.8); animation: syncpulse 0.6s ease-in-out infinite; }
 .slotrow { display: flex; gap: 5px; }
 .slot {
   width: 36px; height: 36px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.5);
@@ -150,6 +158,7 @@ html, body {
 }
 .toast.cyan { border-color: rgba(79, 216, 224, 0.45); color: var(--cyan-b); }
 .toast.red { border-color: rgba(255, 92, 92, 0.5); color: #ffb0a0; }
+.toast.gold { border-color: rgba(255, 210, 62, 0.6); color: #ffd77a; }
 .toast.fade { opacity: 0; transition: opacity 0.5s; }
 @keyframes toastin { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
 
@@ -244,6 +253,27 @@ h2 { font-size: 24px; letter-spacing: 8px; margin-bottom: 18px; color: var(--amb
   display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr));
   gap: 14px 18px; margin: 8px 0 4px; max-height: 56vh; overflow-y: auto; text-align: left;
 }
+/* ---------- 图鉴（M3） ---------- */
+#codexList {
+  display: grid; grid-template-columns: repeat(2, minmax(240px, 1fr));
+  gap: 8px; margin: 8px 0 4px; max-height: 58vh; overflow-y: auto; text-align: left;
+}
+.codexcard {
+  border: 1px solid var(--line); background: rgba(0, 0, 0, 0.35); border-radius: 4px;
+  padding: 8px 10px; display: flex; flex-direction: column; gap: 3px;
+}
+.codexcard.locked { opacity: 0.42; }
+.codexcard .cx-head { display: flex; align-items: center; gap: 8px; }
+.codexcard .cx-glyph {
+  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 3px; font-size: 13px; font-weight: 700;
+}
+.codexcard .cx-name { font-size: 13px; font-weight: 700; }
+.codexcard .cx-kind { font-size: 11px; color: var(--dim); margin-left: auto; letter-spacing: 1px; }
+.codexcard .cx-stats { font-size: 12px; color: var(--gold); font-family: Consolas, monospace; }
+.codexcard .cx-behavior { font-size: 12px; color: var(--text); }
+.codexcard .cx-tip { font-size: 12px; color: var(--cyan-b); }
+.codexcard .cx-kills { font-size: 11px; color: var(--dim); }
 .metabranch { display: flex; flex-direction: column; gap: 6px; }
 .mb-title {
   font-size: 13px; letter-spacing: 3px; color: var(--cyan-b);

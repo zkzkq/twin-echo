@@ -211,6 +211,96 @@ window.__botDodge = (f) => {
   w.input.x = nx; w.input.y = ny;
 };`;
 
+/**
+ * 编队走位机器人（M3「回响同步 / 双影夹击」收益实验用）。
+ *
+ * 目的：验证"给走位一个正收益"之后，**贴着残影作战**是否终于能打平/超过贪宝石流。
+ * 曾经的负面结论（见 BOT_DODGE_FN 注释）：纯规避 = 脱离交战 = 没等级 = 死得更早。
+ * 本版不是纯规避，而是**贪宝石为基座 + 回响同步为叠加**：
+ *   - 残影永远重演你 2.5s 前的位置，所以"贴着残影"等价于"走回自己刚走过的路"（回环/绕圈）；
+ *   - 回环走位恰好也待在已被清空的口袋里，天然比直线逃跑更安全；
+ *   - 叠加弹幕与危险区侧移（否则照样被弹幕打死，会淹没同步带来的信号）。
+ */
+export const BOT_SYNC_FN = `window.__botSyncDir = null;
+window.__botSync = (f) => {
+  const w = __twinEcho.world;
+  const p = w.player;
+
+  // ① 基座：贪最近宝石（保证练级与交战，这是生存的第一因）
+  let ex = 0, ey = 0, ed = Infinity;
+  for (const en of w.enemies.items) {
+    if (!en.active) continue;
+    const d = (en.x - p.x) ** 2 + (en.y - p.y) ** 2;
+    if (d < ed) { ed = d; ex = en.x; ey = en.y; }
+  }
+  const eDist = Number.isFinite(ed) ? Math.sqrt(ed) : Infinity;
+  let dx = 0, dy = 0;
+  if (eDist < 120) {
+    dx = p.x - ex; dy = p.y - ey;                 // 贴身 → 退开
+  } else {
+    let gx = 0, gy = 0, gd = Infinity;
+    for (const gm of w.gems.items) {
+      if (!gm.active) continue;
+      const d = (gm.x - p.x) ** 2 + (gm.y - p.y) ** 2;
+      if (d < gd) { gd = d; gx = gm.x; gy = gm.y; }
+    }
+    if (gd < Infinity) { dx = gx - p.x; dy = gy - p.y; }
+    else { const a = f * 0.004; dx = Math.cos(a); dy = Math.sin(a); }
+  }
+  const bl = Math.hypot(dx, dy) || 1;
+  dx /= bl; dy /= bl;
+
+  // ② 叠加：回响同步拉力 —— 离残影越远，越要把自己拉回刚走过的轨迹上
+  const sx = w.echo.x - p.x, sy = w.echo.y - p.y;
+  const sd = Math.hypot(sx, sy) || 1;
+  const over = sd - 100;                          // 100px 内不加权，避免抖成原地不动
+  if (over > 0) {
+    const wgt = Math.min(2.6, over / 90);
+    dx += (sx / sd) * wgt;
+    dy += (sy / sd) * wgt;
+  }
+
+  // ③ 叠加：弹幕垂直侧移
+  let dodgeX = 0, dodgeY = 0;
+  for (const b of w.bullets.items) {
+    if (!b.active || !b.hostile) continue;
+    const bx = p.x - b.x, by = p.y - b.y;
+    const d2 = bx * bx + by * by;
+    if (d2 > 300 * 300) continue;
+    const sp = Math.hypot(b.vx, b.vy) || 1;
+    const ux = b.vx / sp, uy = b.vy / sp;
+    const along = bx * ux + by * uy;
+    if (along <= 0) continue;
+    const perp = bx * uy - by * ux;
+    const danger = Math.max(0, 1 - Math.abs(perp) / 80) * Math.max(0, 1 - Math.sqrt(d2) / 300);
+    if (danger <= 0.02) continue;
+    const sign = perp >= 0 ? 1 : -1;
+    dodgeX += -uy * sign * danger * 1.8;
+    dodgeY += ux * sign * danger * 1.8;
+  }
+  // ④ 叠加：危险区规避
+  for (const h of w.hazards.items) {
+    if (!h.active) continue;
+    const hx = p.x - h.x, hy = p.y - h.y;
+    const d = Math.hypot(hx, hy) || 1;
+    const safeR = h.r + 60;
+    if (d >= safeR) continue;
+    const danger = Math.max(0, 1 - d / safeR) * (h.tele > 0 ? 1.5 : 1.1);
+    dodgeX += (hx / d) * danger * 1.6;
+    dodgeY += (hy / d) * danger * 1.6;
+  }
+  dx += dodgeX; dy += dodgeY;
+
+  // ⑤ 方向承诺（同躲弹幕机器人：无平滑会在弹道两侧翻转 → 原地不动 → 被围死）
+  const prev = window.__botSyncDir;
+  if (prev) { dx = prev.x * 0.72 + dx * 0.28; dy = prev.y * 0.72 + dy * 0.28; }
+  if (Math.hypot(dx, dy) < 0.05) { const a = f * 0.01; dx = Math.cos(a); dy = Math.sin(a); }
+  const L = Math.hypot(dx, dy) || 1;
+  const nx = dx / L, ny = dy / L;
+  window.__botSyncDir = { x: nx, y: ny };
+  w.input.x = nx; w.input.y = ny;
+};`;
+
 export class CDP {
   constructor(ws) {
     this.ws = ws;

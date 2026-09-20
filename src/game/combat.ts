@@ -66,22 +66,48 @@ export function applyDamage(
   if (!e.active) return;
   const p = w.player;
   let dmg = base;
+  // 攻击来源位置（本体/残影各自的位置），夹击判定与击退都用它
+  const fx = src === 'echo' ? w.echo.x : p.x;
+  const fy = src === 'echo' ? w.echo.y : p.y;
+  // 回响同步：本体贴着残影 → 连续同步 ramp 增伤（M3 新增，奖励承诺编队）
+  const syncMul = 1 + w.syncBonus();
+  dmg *= syncMul;
 
   if (!opts.noRes) {
     const now = w.time;
     if (e.lastHitSrc !== null && e.lastHitSrc !== src && now - e.lastHitT <= w.resonanceWindow()) {
+      // 双影夹击：上一跳来源与本次来源在敌人两侧（夹角 >120°）→ 额外伤害与共鸣值
+      let pincer = false;
+      const ax = e.lastHitX - e.x, ay = e.lastHitY - e.y;
+      const bx = fx - e.x, by = fy - e.y;
+      const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by);
+      if (la > 1 && lb > 1 && (ax * bx + ay * by) / (la * lb) < BAL.resonance.pincerAngleCos) pincer = true;
+
       dmg *= BAL.resonance.dmgMult * (1 + p.stats.resDmg);
+      if (pincer) {
+        // 密库「夹击 +20%」（M3）
+        dmg *= BAL.resonance.pincerDmgMult * (1 + w.meta.pincerDmgPct);
+        w.stats.pincerHits++;
+      }
       // 共鸣泉事件 ×2（GDD §6.7）
-      const gain = BAL.resonance.gaugeGain * (1 + p.stats.resGain) * w.gaugeMult();
+      const gain = BAL.resonance.gaugeGain * (1 + p.stats.resGain) * w.gaugeMult() * syncMul * (pincer ? BAL.resonance.pincerGaugeMult : 1);
       const was = p.gauge;
       p.gauge = Math.min(BAL.resonance.gaugeMax, p.gauge + gain);
       w.stats.resHits++;
       w.audio.chime();
-      // 双色共鸣火花
+      // 双色共鸣火花（夹击时加一圈金环与更多粒子，让"编队成功"可感）
       const sparkColor = src === 'body' ? COLORS.echo : COLORS.player;
       w.spawnRing(e.x, e.y, 6, 34, 0.28, sparkColor, 0.6);
-      for (let i = 0; i < 8; i++) {
-        w.spawnParticle(e.x, e.y, i % 2 === 0 ? COLORS.echo : COLORS.player, w.rng.range(60, 220), 0.4, w.rng.range(2, 4));
+      const n = pincer ? 16 : 8;
+      for (let i = 0; i < n; i++) {
+        w.spawnParticle(e.x, e.y, i % 2 === 0 ? COLORS.echo : COLORS.player, w.rng.range(60, pincer ? 320 : 220), 0.4, w.rng.range(2, pincer ? 5 : 4));
+      }
+      if (pincer) {
+        w.spawnRing(e.x, e.y, 14, 58, 0.4, COLORS.eliteRing, 0.85);
+        if (!w.flags.pincerToasted) {
+          w.flags.pincerToasted = true;
+          w.onEvent('first-pincer');
+        }
       }
       if (was < BAL.resonance.gaugeMax && p.gauge >= BAL.resonance.gaugeMax && !w.flags.gaugeToasted) {
         w.flags.gaugeToasted = true;
@@ -95,10 +121,12 @@ export function applyDamage(
     } else {
       e.lastHitSrc = src;
       e.lastHitT = now;
+      e.lastHitX = fx;
+      e.lastHitY = fy;
     }
   }
 
-  if (src === 'echo') dmg *= w.run.echoCoeff;
+  if (src === 'echo') dmg *= w.run.echoCoeff * (1 + p.stats.echoDmg + w.meta.echoDmgPct); // 被动「回响」+ 密库「织造」支线（M3）
   // 角色「断剑士·凯」等：本体伤害流（只作用于 body）
   else if (w.run.bodyDmgPct !== 0) dmg *= 1 + w.run.bodyDmgPct;
 
@@ -118,8 +146,6 @@ export function applyDamage(
   w.stats.hits++;
   w.audio.hit();
 
-  const fx = src === 'body' ? w.player.x : w.echo.x;
-  const fy = src === 'body' ? w.player.y : w.echo.y;
   if (crit) {
     w.spawnParticle(e.x, e.y, 0xffffff, 140, 0.25, 4);
     knock(e, opts.kb ?? 40, fx, fy);
@@ -279,6 +305,140 @@ export function updateWeapons(w: World, dt: number): void {
       }
       w.echo.events.push({ frame: w.frame, id, kind: 'chain', x: p.x, y: p.y, ang: 0, count: jumps });
       st.cd = def.interval * mult;
+    } else if (def.kind === 'pendulum') {
+      // 钟摆镰（M3）：朝面向挥出 120° 扇形镰刃
+      const radius = (st.lv >= 6 ? 230 : 170) * area;
+      const dmg = weaponDamage(w, id);
+      const half = Math.PI / 3; // ±60°
+      w.hash.query(p.x, p.y, radius + 44, tmp);
+      for (const e of tmp) {
+        if (!e.active) continue;
+        const rr = radius + e.radius;
+        const dx = e.x - p.x;
+        const dy = e.y - p.y;
+        if (dx * dx + dy * dy > rr * rr) continue;
+        let da = Math.atan2(dy, dx) - p.facing;
+        while (da > Math.PI) da -= Math.PI * 2;
+        while (da < -Math.PI) da += Math.PI * 2;
+        if (Math.abs(da) > half) continue;
+        applyDamage(w, e, dmg, 'body', { kb: st.lv >= 6 ? 90 : 45, weaponId: id });
+      }
+      for (let k = -2; k <= 2; k++) {
+        const a = p.facing + k * 0.26;
+        w.spawnParticle(p.x + Math.cos(a) * radius * 0.8, p.y + Math.sin(a) * radius * 0.8, COLORS.player, 40, 0.2, 5);
+      }
+      w.echo.events.push({ frame: w.frame, id, kind: 'pendulum', x: p.x, y: p.y, ang: p.facing, count: 1 });
+      st.cd = def.interval * mult;
+    } else if (def.kind === 'boomerang') {
+      // 回旋镖（M3）：去程 + 回程两段伤害
+      const evolvedB = p.evolutions.has('metronome');
+      const count = evolvedB ? 2 : 1;
+      const dmg = weaponDamage(w, id);
+      const speed = BAL.weapons.boomerangSpeed * (evolvedB ? 1.4 : 1);
+      const tgt = nearestEnemy(w, p.x, p.y, 620);
+      const ang = tgt ? Math.atan2(tgt.y - p.y, tgt.x - p.x) : p.facing;
+      for (let i = 0; i < count; i++) {
+        const a = ang + (i - (count - 1) / 2) * 0.35;
+        const b = w.spawnBullet(p.x, p.y, Math.cos(a) * speed, Math.sin(a) * speed, dmg, 'boomerang', 9, 3, 'body', false, 2.4);
+        b.weaponId = id;
+      }
+      w.echo.events.push({ frame: w.frame, id, kind: 'boomerang', x: p.x, y: p.y, ang, count });
+      st.cd = def.interval * mult;
+    } else if (def.kind === 'rain') {
+      // 时之沙暴（M3）：在最近 N 个敌人头顶落下沙柱
+      const evolved = p.evolutions.has('sandstorm');
+      const n = (st.lv >= 6 ? 5 : 3) + (evolved ? 3 : 0);
+      const radius = (st.lv >= 6 ? 110 : 70) * area * (evolved ? 1.4 : 1);
+      const dmg = weaponDamage(w, id);
+      const targets: Enemy[] = [];
+      w.hash.query(p.x, p.y, 604, tmp);
+      for (const e of tmp) if (e.active) targets.push(e);
+      if (targets.length === 0) {
+        st.cd = 0.25;
+        continue;
+      }
+      targets.sort((a, b) => (a.x - p.x) ** 2 + (a.y - p.y) ** 2 - ((b.x - p.x) ** 2 + (b.y - p.y) ** 2));
+      for (let i = 0; i < Math.min(n, targets.length); i++) {
+        const tx = targets[i]!.x;
+        const ty = targets[i]!.y;
+        w.hash.query(tx, ty, radius + 44, tmp);
+        for (const e of tmp) {
+          if (!e.active) continue;
+          const rr = radius + e.radius;
+          if ((e.x - tx) ** 2 + (e.y - ty) ** 2 <= rr * rr) {
+            applyDamage(w, e, dmg, 'body', { weaponId: id });
+            if (evolved) e.frozenT = Math.max(e.frozenT, 0.5); // 进化：命中定身 0.5s
+          }
+        }
+        w.spawnRing(tx, ty, 10, radius, 0.32, COLORS.altar, 0.8);
+      }
+      st.cd = def.interval * mult;
+    } else if (def.kind === 'web') {
+      // 命运织网（M3）：在敌群中心织出减速网（减速域用危险区承载，伤害由武器结算一次）
+      const radius = (st.lv >= 6 ? 180 : 130) * area;
+      const slowFactor = st.lv >= 6 ? 0.5 : 0.65;
+      const tgt = nearestEnemy(w, p.x, p.y, 520);
+      if (!tgt) {
+        st.cd = 0.3;
+        continue;
+      }
+      const dmg = weaponDamage(w, id);
+      w.hash.query(tgt.x, tgt.y, radius + 44, tmp);
+      for (const e of tmp) {
+        if (!e.active) continue;
+        const rr = radius + e.radius;
+        if ((e.x - tgt.x) ** 2 + (e.y - tgt.y) ** 2 <= rr * rr) {
+          applyDamage(w, e, dmg, 'body', { weaponId: id });
+          e.slowT = Math.max(e.slowT, 3);
+        }
+      }
+      w.spawnHazard(tgt.x, tgt.y, radius, 3, { tele: 0, dps: 0, kind: 'web', color: 0x8fd8ff, slowFactor });
+      st.cd = def.interval * mult;
+    } else if (def.kind === 'prism') {
+      // 双生棱镜（M3）：本体与残影同时射出光矢——残影那发按 src='echo' 结算，可触发共鸣
+      const evolvedP = p.evolutions.has('mirror');
+      const tgt = nearestEnemy(w, p.x, p.y, 700);
+      if (!tgt) {
+        st.cd = 0.15;
+        continue;
+      }
+      const dmg = weaponDamage(w, id);
+      const dirs = evolvedP ? 3 : 1;
+      const baseA = Math.atan2(tgt.y - p.y, tgt.x - p.x);
+      for (let i = 0; i < dirs; i++) {
+        const a = baseA + (i - (dirs - 1) / 2) * 0.22;
+        for (const side of ['body', 'echo'] as const) {
+          const ox = side === 'body' ? p.x : w.echo.x;
+          const oy = side === 'body' ? p.y : w.echo.y;
+          const b = w.spawnBullet(ox, oy, Math.cos(a) * BAL.weapons.boltSpeed, Math.sin(a) * BAL.weapons.boltSpeed,
+            dmg * (side === 'echo' && evolvedP ? 1.25 : 1), 'bolt', 7, st.lv >= 6 ? 3 : 1, side, false, 1.9);
+          b.weaponId = id;
+        }
+      }
+      st.cd = def.interval * mult;
+    } else if (def.kind === 'chime') {
+      // 回响钟鸣（M3）：以**残影**为中心释放脉冲——把残影带进敌群才有输出
+      const evolvedC = p.evolutions.has('singularity');
+      const radius = (st.lv >= 6 ? 210 : 140) * area * p.stats.echoRange * (evolvedC ? 1.6 : 1);
+      const dmg = weaponDamage(w, id);
+      w.hash.query(w.echo.x, w.echo.y, radius + 44, tmp);
+      let hits = 0;
+      for (const e of tmp) {
+        if (!e.active) continue;
+        const rr = radius + e.radius;
+        if ((e.x - w.echo.x) ** 2 + (e.y - w.echo.y) ** 2 <= rr * rr) {
+          applyDamage(w, e, dmg, 'echo', { kb: st.lv >= 6 ? 70 : 12, weaponId: id });
+          hits++;
+        }
+      }
+      if (hits === 0) {
+        st.cd = 0.25;
+        continue;
+      }
+      if (evolvedC) p.gauge = Math.min(BAL.resonance.gaugeMax, p.gauge + hits); // 进化：每次命中 +1 共鸣值
+      w.spawnRing(w.echo.x, w.echo.y, 20, radius, 0.35, COLORS.echo, 0.8);
+      w.echo.events.push({ frame: w.frame, id, kind: 'chime', x: p.x, y: p.y, ang: 0, count: 1 });
+      st.cd = def.interval * mult;
     } else {
       // butterfly
       const count = st.lv >= 6 ? 5 : 2;
@@ -414,6 +574,48 @@ export function replayEchoAttacks(w: World): void {
         }
         break;
       }
+      // ---- M3 新增武器的残影重演 ----
+      case 'pendulum': {
+        // 残影按它当时的面向再挥一次扇形
+        const radius = (st.lv >= 6 ? 230 : 170) * areaMult(w) * w.player.stats.echoRange;
+        const half = Math.PI / 3;
+        w.hash.query(e0.x, e0.y, radius + 44, tmp);
+        for (const e of tmp) {
+          if (!e.active) continue;
+          const rr = radius + e.radius;
+          const dx = e.x - e0.x;
+          const dy = e.y - e0.y;
+          if (dx * dx + dy * dy > rr * rr) continue;
+          let da = Math.atan2(dy, dx) - e0.ang;
+          while (da > Math.PI) da -= Math.PI * 2;
+          while (da < -Math.PI) da += Math.PI * 2;
+          if (Math.abs(da) > half) continue;
+          applyDamage(w, e, dmg, 'echo', { kb: st.lv >= 6 ? 90 : 45, weaponId: e0.id });
+        }
+        break;
+      }
+      case 'boomerang': {
+        for (let i = 0; i < e0.count; i++) {
+          const a = e0.ang + (i - (e0.count - 1) / 2) * 0.35;
+          const b = w.spawnBullet(e0.x, e0.y, Math.cos(a) * BAL.weapons.boomerangSpeed, Math.sin(a) * BAL.weapons.boomerangSpeed, dmg, 'boomerang', 9, 3, 'echo', false, 2.4);
+          b.weaponId = e0.id;
+        }
+        break;
+      }
+      case 'chime': {
+        // 钟鸣的"残影"重演：在记录位置再鸣一次（也算残影命中）
+        const radius = (st.lv >= 6 ? 210 : 140) * areaMult(w) * w.player.stats.echoRange;
+        w.hash.query(e0.x, e0.y, radius + 44, tmp);
+        for (const e of tmp) {
+          if (!e.active) continue;
+          const rr = radius + e.radius;
+          if ((e.x - e0.x) ** 2 + (e.y - e0.y) ** 2 <= rr * rr) {
+            applyDamage(w, e, dmg, 'echo', { kb: st.lv >= 6 ? 70 : 12, weaponId: e0.id });
+          }
+        }
+        w.spawnRing(e0.x, e0.y, 20, radius, 0.35, COLORS.echo, 0.7);
+        break;
+      }
     }
   }
 }
@@ -427,8 +629,32 @@ export function updateBullets(w: World, dt: number): void {
       w.bullets.release(b);
       continue;
     }
-    if (b.homing) {
-      b.retarget -= dt;
+    // 回旋镖（M3）：飞出一段后折返，回程伤害 ×1.6 且可再次命中同一敌人
+    if (b.kind === 'boomerang') {
+      if (!b.returning) {
+        b.retarget += dt;
+        if (b.retarget >= BAL.weapons.boomerangTurnAt) {
+          b.returning = true;
+          b.dmg *= BAL.weapons.boomerangReturnMult;
+          b.hitIds.clear();
+        }
+      } else {
+        const cur = Math.atan2(b.vy, b.vx);
+        const want = Math.atan2(p.y - b.y, p.x - b.x);
+        let da = want - cur;
+        while (da > Math.PI) da -= Math.PI * 2;
+        while (da < -Math.PI) da += Math.PI * 2;
+        const sp = Math.hypot(b.vx, b.vy);
+        const a = cur + Math.max(-6 * dt, Math.min(6 * dt, da));
+        b.vx = Math.cos(a) * sp;
+        b.vy = Math.sin(a) * sp;
+        if ((b.x - p.x) ** 2 + (b.y - p.y) ** 2 < 26 * 26) {
+          w.bullets.release(b);
+          continue;
+        }
+      }
+    }
+    if (b.homing) {      b.retarget -= dt;
       if (b.retarget <= 0) {
         b.retarget = 0.2;
         b.target = nearestEnemy(w, b.x, b.y, 420);
@@ -516,7 +742,7 @@ export function tryBurst(w: World): boolean {
   p.invulnT = Math.max(p.invulnT, BAL.burst.invuln + w.meta.burstInvulnBonus);
 
   const radius = BAL.burst.radius * (1 + w.meta.burstRadiusPct + w.run.burstRadiusPct);
-  const dmg = panelDps(w) * BAL.burst.dpsMult * (1 + w.meta.burstDmgPct);
+  const dmg = panelDps(w) * BAL.burst.dpsMult * (1 + w.meta.burstDmgPct + p.stats.burstDmg);
   if (w.run.burstHastePct > 0) w.burstHasteT = 3; // 诺恩：爆发后 3s 攻速加成
   const R2 = radius * radius;
   w.hash.query(p.x, p.y, radius + 60, tmp);

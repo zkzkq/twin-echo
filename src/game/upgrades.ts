@@ -92,7 +92,8 @@ export function genChoices(w: World): Choice[] {
     }];
   }
 
-  const n = Math.min(w.run.choiceCount, pool.length);
+  // 密库「四选一 / 命运主宰」（M3）：升级面板选项数 +1/+2
+  const n = Math.min(w.run.choiceCount + w.meta.choiceBonus, pool.length);
   const chosen = weightedSampleN(w.rng, pool, n);
 
   // 命运加权保底
