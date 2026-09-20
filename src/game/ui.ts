@@ -23,6 +23,7 @@ export interface UIHandlers {
   closeCodex(): void;
   buyMeta(id: string): void;
   exportSave(): void;
+  exportReport(): void;
   importSave(): void;
   openSetup(): void;
   closeSetup(): void;
@@ -152,6 +153,8 @@ export class UI {
   private codex = $('codex');
   private codexList = $('codexList');
   private codexProgress = $('codexProgress');
+  private achvList = $('achvList');
+  private achvProgress = $('achvProgress');
   private levelup = $('levelup');
   private cards = $('cards');
   private pause = $('pause');
@@ -182,6 +185,7 @@ export class UI {
     $('btnCodexTitle').onclick = () => h.openCodex();
     $('btnCodexClose').onclick = () => h.closeCodex();
     $('btnMetaExport').onclick = () => h.exportSave();
+    $('btnReport').onclick = () => h.exportReport();
     $('btnMetaImport').onclick = () => h.importSave();
     $('btnSetup').onclick = () => h.openSetup();
     $('btnSetupClose').onclick = () => h.closeSetup();
@@ -297,8 +301,13 @@ export class UI {
     this.meta.classList.add('hidden');
   }
 
-  /** 图鉴（M3）：未遭遇时只显示剪影，遭遇后展示数值、行为与应对提示 */
-  showCodex(entries: readonly { kind: string; name: string; glyph: string; color: number; stats: string; behavior: string; tip: string }[], kills: Record<string, number>, ids: readonly string[]): void {
+  /** 图鉴 + 成就（M3）：未遭遇时只显示剪影；成就显示历史最佳进度 */
+  showCodex(
+    entries: readonly { kind: string; name: string; glyph: string; color: number; stats: string; behavior: string; tip: string }[],
+    kills: Record<string, number>,
+    ids: readonly string[],
+    achievements: readonly { name: string; desc: string; category: string; unlocked: boolean; progress: string }[] = [],
+  ): void {
     let unlocked = 0;
     this.codexList.innerHTML = entries
       .map((e, i) => {
@@ -319,6 +328,24 @@ export class UI {
       })
       .join('');
     this.codexProgress.textContent = `${unlocked} / ${entries.length}`;
+    // 成就区（M3）：按"已解锁 → 未解锁"排序，未解锁显示历史最佳进度
+    if (this.achvList) {
+      const CAT: Record<string, string> = { first: '初体验', mechanic: '机制', milestone: '里程碑', collect: '收集' };
+      const sorted = [...achievements].sort((a, b) => Number(b.unlocked) - Number(a.unlocked));
+      const got = achievements.filter((a) => a.unlocked).length;
+      this.achvProgress.textContent = `${got} / ${achievements.length}`;
+      this.achvList.innerHTML = sorted
+        .map(
+          (a) => `<div class="achvrow ${a.unlocked ? 'got' : ''}">
+            <span class="av-icon">${a.unlocked ? '🏆' : '·'}</span>
+            <span class="av-name">${a.name}</span>
+            <span class="av-tag">${CAT[a.category] ?? ''}</span>
+            <span class="av-desc">${a.desc}</span>
+            <span class="av-prog">${a.unlocked ? '已解锁' : a.progress}</span>
+          </div>`,
+        )
+        .join('');
+    }
     this.codex.classList.remove('hidden');
   }
 

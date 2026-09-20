@@ -559,6 +559,268 @@ try {
   check(mouse.override.dx > 60, '鼠标生效时覆盖键盘轴（不叠加）', `键盘左 + 鼠标右 → Δx ${mouse.override.dx}`);
   check(mouse.blocked === false, '非 run 状态（面板打开）鼠标不抢输入');
 
+  // 12.11 M3：地图专属机制①——静止图书馆的「视线遮蔽」（可视判定 / 索敌 / 渲染 / 迷雾）
+  const vision = await cdp.eval(`(() => {
+    const g = __twinEcho, w = g.world;
+    g.saved.mapsBeaten = ['plain'];
+    g.selectMap('library');
+    g.startRun();
+    const p = w.player;
+    const R = w.visionR();
+    const out = { mapId: w.mapDef.id, R };
+    // ① 半径外不可见 / 半径内无遮挡可见
+    out.far = w.sees(p.x + R + 80, p.y);
+    out.near = w.sees(p.x + 120, p.y);
+    // ② 障碍遮挡：把玩家钉在书架一侧，目标钉在书架正后方（同一条射线上）
+    const list = w.obstaclesNear(0, 0, []);
+    const ob = list.slice().sort((a, b) => b.r - a.r)[0];
+    const dx = ob.x - p.x, dy = ob.y - p.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const ux = dx / d, uy = dy / d;
+    p.x = ob.x - ux * (ob.r + 60);
+    p.y = ob.y - uy * (ob.r + 60);
+    const tx = ob.x + ux * (ob.r + 30), ty = ob.y + uy * (ob.r + 30);
+    out.behindSees = w.sees(tx, ty);
+    out.behindDist = Math.round(Math.hypot(tx - p.x, ty - p.y));
+    // 同一位置、垂直方向的等距目标应可见（射线不穿过书架）
+    out.perpSees = w.sees(p.x - uy * 190, p.y + ux * 190);
+    out.obR = Math.round(ob.r);
+    // ③ 索敌：先让场上成规模（跑 10s，玩家无敌），再把所有敌人搬到视野半径之外
+    for (let i = 0; i < 600; i++) { p.invulnT = 9999; w.update(1/60); }
+    w.player.weapons.clear();
+    w.player.passives.clear();
+    w.player.evolutions.clear();
+    w.player.weapons.set('bolt', { lv: 1, cd: 0 });
+    const park = (dist) => { for (const e of w.enemies.items) if (e.active) { e.x = p.x + dist; e.y = p.y + (e.id % 7) * 12; } };
+    park(R + 300);
+    const b0 = w.bullets.count;
+    let sawFar = false;
+    for (let i = 0; i < 12; i++) { park(R + 300); p.invulnT = 9999; w.update(1/60); if (w.enemies.items.some((x) => x.active && !x.boss)) sawFar = true; }
+    out.shotsFar = w.bullets.count - b0;
+    out.sawFar = sawFar;
+    // ④ 留一个敌人在视野内 → 应恢复开火（其余仍留在视野外）
+    const e0 = w.enemies.items.find((x) => x.active && !x.boss);
+    if (!e0) return { ...out, err: 'phase4 no enemy' };
+    e0.hp = 1e9;
+    const b1 = w.bullets.count;
+    for (let i = 0; i < 12; i++) {
+      park(R + 300);
+      e0.x = p.x + 150; e0.y = p.y;
+      p.invulnT = 9999;
+      w.update(1/60);
+    }
+    out.shotsNear = w.bullets.count - b1;
+    // ⑤ 渲染：迷雾开启 + 视野外敌人不画
+    g.render(1/60);
+    out.fogVisible = !!(g.fogSprite && g.fogSprite.visible);
+    out.fogScale = g.fogSprite ? +g.fogSprite.scale.x.toFixed(2) : 0;
+    // 全部搬到视野外再渲染一次
+    park(R + 300);
+    w.update(1/60);
+    g.render(1/60);
+    out.spritesVisibleAllFar = w.enemies.items.filter((e) => e.active && !e.boss && !e.elite && e.sprite.visible).length;
+    out.activeNonBoss = w.enemies.items.filter((e) => e.active && !e.boss && !e.elite).length;
+    // ⑥ 平原图无遮蔽、无迷雾
+    g.saved.mapsBeaten = ['plain', 'library'];
+    g.selectMap('plain');
+    g.startRun();
+    out.plainR = g.world.visionR();
+    out.plainSeesFar = g.world.sees(g.world.player.x + 5000, g.world.player.y);
+    g.render(1/60);
+    out.plainFog = !!(g.fogSprite && g.fogSprite.visible);
+    return out;
+  })()`);
+  check(vision.mapId === 'library' && vision.R > 0, '图书馆启用视野遮蔽（visionR > 0）', `${vision.mapId} · r=${vision.R}`);
+  check(vision.far === false && vision.near === true, '视野半径外不可见 / 半径内可见');
+  check(
+    vision.behindSees === false && vision.perpSees === true,
+    '书架真实遮挡：正后方不可见（距离 ' + vision.behindDist + 'px < 视野半径）· 垂直方向可见',
+    `书架 r=${vision.obR}`,
+  );
+  check(vision.shotsFar === 0 && vision.sawFar === true, '自动索敌尊重视线：敌人全在视野外时裂空弩不开火（场上确有敌人）', `12 帧内新弹 ${vision.shotsFar}`);
+  check(vision.shotsNear > 0, '敌人进入视野后恢复索敌', `12 帧内新弹 ${vision.shotsNear}`);
+  check(vision.fogVisible === true && vision.fogScale > 1, '迷雾层随视野半径缩放显示', `scale ${vision.fogScale}`);
+  check(
+    vision.activeNonBoss > 0 && vision.spritesVisibleAllFar === 0,
+    '视野外的敌人不渲染（Boss/精英除外）',
+    `同屏非精英 ${vision.activeNonBoss} → 可见精灵 ${vision.spritesVisibleAllFar}`,
+  );
+  check(vision.plainR === 0 && vision.plainSeesFar === true && vision.plainFog === false, '时钟平原无遮蔽、无迷雾（不误伤其它地图）');
+
+  // 12.12 M3：地图专属机制②——崩坏之环的「同心圆环地形」
+  const rings = await cdp.eval(`(() => {
+    const g = __twinEcho, w = g.world;
+    g.saved.mapsBeaten = ['plain', 'library'];
+    g.selectMap('ring');
+    g.startRun();
+    const list = [];
+    for (let cx = -2; cx <= 2; cx++) for (let cy = -2; cy <= 2; cy++) {
+      for (const o of w.obstaclesNear(cx * 800 + 400, cy * 800 + 400, [])) list.push(o);
+    }
+    const uniq = new Map();
+    for (const o of list) uniq.set(o.x + ':' + o.y, o);
+    const all = [...uniq.values()];
+    const STEP = 560;
+    const offRing = all.filter((o) => {
+      const d = Math.hypot(o.x, o.y);
+      const k = Math.round(d / STEP);
+      return k < 1 || Math.abs(d - k * STEP) > 120;
+    }).length;
+    // 缺口：k=1 环上的最大角度空隙
+    const ring1 = all.filter((o) => { const d = Math.hypot(o.x, o.y); return d > STEP - 140 && d < STEP + 140; });
+    ring1.sort((a, b) => Math.atan2(a.y, a.x) - Math.atan2(b.y, b.x));
+    let maxGap = 0;
+    for (let i = 1; i < ring1.length; i++) {
+      const a0 = Math.atan2(ring1[i - 1].y, ring1[i - 1].x);
+      const a1 = Math.atan2(ring1[i].y, ring1[i].x);
+      maxGap = Math.max(maxGap, a1 - a0);
+    }
+    // 跨区块拼接：边界附近的障碍应同时被两侧区块查到（不会在缝上丢/重）
+    const nearEdge = all.find((o) => {
+      const mx = ((o.x % 800) + 800) % 800;
+      const my = ((o.y % 800) + 800) % 800;
+      return Math.min(mx, 800 - mx, my, 800 - my) < 60;
+    });
+    let seamOk = null;
+    if (nearEdge) {
+      const left = w.obstaclesNear(nearEdge.x - 130, nearEdge.y, []);
+      const right = w.obstaclesNear(nearEdge.x + 130, nearEdge.y, []);
+      seamOk = left.some((o) => o.x === nearEdge.x && o.y === nearEdge.y) && right.some((o) => o.x === nearEdge.x && o.y === nearEdge.y);
+    }
+    return {
+      count: all.length, offRing, maxGap: +maxGap.toFixed(2), ring1: ring1.length,
+      seamOk, hasSeamSample: !!nearEdge,
+      pattern: w.mapDef.obstacles.pattern,
+    };
+  })()`);
+  check(rings.pattern === 'rings' && rings.count > 20, '崩坏之环使用同心圆环地形', `${rings.count} 个障碍 · pattern=${rings.pattern}`);
+  check(rings.offRing === 0, '所有障碍都落在同心圆环带上（560px 步长 ±120）');
+  check(rings.ring1 > 10 && rings.maxGap > 0.6, '环上留有可通行的缺口（走廊）', `k=1 环 ${rings.ring1} 个障碍 · 最大缺口 ${rings.maxGap} rad`);
+  check(rings.hasSeamSample === false || rings.seamOk === true, '跨区块拼接一致（边界障碍两侧都能查到）');
+
+  // 12.13 M3：验收度量口径（崩溃率 / 3 日回访 / 中位局时长）——M3 三条 Exit Criteria 的仪器
+  const diagT = await cdp.eval(`(() => {
+    const D = window.__diag;
+    const SESSION_KEY = 'twinEcho.session';
+    localStorage.removeItem(SESSION_KEY);
+    D.state.sessions = 0; D.state.cleanExits = 0; D.state.crashes = [];
+    D.state.runSeconds = []; D.state.playDays = []; D.state.sessionStarts = [];
+    // ① 会话 1：正常收尾；会话 2：异常结束（没 endSession 就再次启动）
+    D.beginSession(); D.endSession();
+    D.beginSession();
+    const r2 = D.beginSession();
+    D.endSession();
+    const rate = D.crashRate();
+    // ② 真实异常通道：派发一个 ErrorEvent，应被 onerror 记录（不混入崩溃率）
+    const before = D.errorCount();
+    window.dispatchEvent(new ErrorEvent('error', { message: 'smoke-probe-error' }));
+    const after = D.errorCount();
+    // ③ 中位局时长
+    for (const s of [300, 600, 1200, 1080, 900]) D.noteRun(s, 1);
+    const med = D.medianRunSeconds();
+    // ④ 回访：D0 / D0+2 / D0+6 → D1 否、D3 是、D7 是
+    const d0 = '2026-01-01';
+    const day = (n) => {
+      const t = new Date(Date.parse(d0 + 'T00:00:00') + n * 86400000);
+      const p = (x) => String(x).padStart(2, '0');
+      return t.getFullYear() + '-' + p(t.getMonth() + 1) + '-' + p(t.getDate());
+    };
+    D.state.playDays = [d0, day(2), day(6)];
+    const ret = D.retention();
+    // ⑤ 报告可生成且含三条指标
+    const report = D.report(7, { character: 'otto', map: 'library', difficulty: 'standard' });
+    const keys = ['崩溃率', '3 日回访', '中位局时长', '游玩日'];
+    return {
+      sessions: D.state.sessions, cleanExits: D.state.cleanExits, unclean: r2.unclean,
+      rate: +rate.toFixed(4), errDelta: after - before, med, ret,
+      hasAll: keys.every((k) => report.includes(k)), reportLen: report.length,
+      lines: report.split('\\n').filter((s) => s.startsWith('| 中位') || s.startsWith('| 3 日') || s.startsWith('| 崩溃')).join(' || '),
+    };
+  })()`);
+  check(diagT.sessions === 3 && diagT.unclean === true, '会话判定：正常收尾 vs 异常结束（崩溃率的分子）', `会话 ${diagT.sessions} · 正常 ${diagT.cleanExits}`);
+  check(Math.abs(diagT.rate - 1 / 3) < 0.01, '崩溃率 = 异常会话 / 总会话', `${(diagT.rate * 100).toFixed(1)}%`);
+  check(diagT.errDelta === 1, '运行时异常被真实 onerror 通道记录（单独计数，不混入崩溃率）', `+${diagT.errDelta} 条`);
+  check(diagT.med === 900, '中位局时长（15min）', `${diagT.med}s`);
+  check(diagT.ret.days === 3 && diagT.ret.d1 === false && diagT.ret.d3 === true && diagT.ret.d7 === true, '回访口径：D1/D3/D7 判定', `D3=${diagT.ret.d3} · D7=${diagT.ret.d7}`);
+  check(diagT.hasAll && diagT.reportLen > 400, '验收报告含三条 Exit Criteria 与原始数据', `${diagT.reportLen} 字符`);
+
+  // 12.14 M3：成就（判定表 / 阈值 / 端到端写入 / 面板 / Steamworks 适配层）
+  const achv = await cdp.eval(`(() => {
+    const A = window.__achv, g = __twinEcho, w = g.world;
+    const ids = A.ACHIEVEMENTS.map((a) => a.id);
+    const out = { total: ids.length, dup: new Set(ids).size !== ids.length };
+    // 空上下文不应解锁任何成就
+    out.none = A.evaluateAchievements(A.EMPTY_CTX, {}).length;
+    // 富上下文：应解锁全部"单局类"
+    const rich = {
+      ...A.EMPTY_CTX, time: 1200, win: true, level: 52, kills: 4200, resHits: 640, pincerHits: 80,
+      syncMaxStreak: 18, evolutions: 3, weapons: 6, passives: 8, bossKills: 4, elitesKilled: 25,
+      paradox: 3, isDaily: true, runs: 21, mapsBeaten: 3, metaNodes: 42, codexSeen: 9,
+    };
+    const unlocked = A.evaluateAchievements(rich, {});
+    out.unlocked = unlocked.length;
+    out.again = A.evaluateAchievements(rich, Object.fromEntries(unlocked.map((i) => [i, 'x']))).length;
+    // 差一点的上下文不该解锁任何成就（阈值必须真的卡住）
+    out.partial = A.evaluateAchievements({
+      ...rich, win: false, level: 10, kills: 100, resHits: 10, pincerHits: 0, syncMaxStreak: 1,
+      evolutions: 0, weapons: 2, passives: 1, bossKills: 0, elitesKilled: 0, paradox: 0,
+      isDaily: false, runs: 0, mapsBeaten: 0, metaNodes: 2, codexSeen: 1,
+    }, {}).length;
+    // Steamworks 适配层
+    const seen = [];
+    A.registerSink({ unlock: (id) => seen.push(id) });
+    A.emitUnlock('first_run');
+    A.emitUnlock('first_win');
+    A.registerSink(null);
+    out.sink = seen;
+    // 端到端：跑完一局（胜利）→ 写入存档
+    g.saved.achievements = {};
+    g.saved.runBest = { level: 0, kills: 0, resHits: 0, pincerHits: 0, syncMaxStreak: 0, evolutions: 0, elitesKilled: 0, bossKills: 0, weapons: 0, passives: 0 };
+    g.runOptions.paradox = 0;
+    g.startRun();
+    for (const id of ['clock', 'bolt', 'pulse', 'butterfly', 'chain', 'trail']) w.player.weapons.set(id, { lv: 1, cd: 0 });
+    for (const id of ['power', 'haste', 'crit', 'vigor', 'swift', 'resonance', 'cd', 'area']) w.player.passives.set(id, 1);
+    for (const id of ['duet', 'arrow', 'metronome']) w.player.evolutions.add(id);
+    w.player.level = 31;
+    Object.assign(w.stats, { kills: 3100, resHits: 120, pincerHits: 55, syncMaxStreak: 16, bossKills: 4, elitesKilled: 21 });
+    w.time = 1199.99;
+    w.update(1/60);
+    out.stateAfter = g.state;
+    const saved = Object.keys(g.saved.achievements);
+    out.savedCount = saved.length;
+    out.saved = saved;
+    out.savedSample = saved.slice(0, 4).join(',');
+    out.bestLevel = g.saved.runBest.level;
+    out.bestRes = g.saved.runBest.resHits;
+    // 面板渲染
+    g.openCodex();
+    out.rows = document.querySelectorAll('#achvList .achvrow').length;
+    out.got = document.querySelectorAll('#achvList .achvrow.got').length;
+    out.progress = document.getElementById('achvProgress').textContent;
+    out.panelState = g.state;
+    g.closeCodex();
+    return out;
+  })()`);
+  check(achv.total >= 18 && !achv.dup, '成就表：≥18 条且 id 唯一', `${achv.total} 条`);
+  check(achv.none === 0 && achv.partial === 0, '阈值真实生效（空/差一点上下文都不解锁）', `空 ${achv.none} · 差一点 ${achv.partial}`);
+  check(achv.unlocked === achv.total && achv.again === 0, '富上下文解锁全部成就，且不重复解锁', `一次解锁 ${achv.unlocked} · 重复 ${achv.again}`);
+  check(achv.sink.length === 2 && achv.sink[0] === 'first_run', 'Steamworks 适配层收到解锁转发', achv.sink.join(','));
+  const wantIds = ['first_run', 'first_win', 'first_evolve', 'res_100', 'pincer_50', 'sync_15s', 'weapons_6', 'passives_8', 'level_30', 'kills_3000', 'boss_4', 'evolve_3', 'elites_20'];
+  const forbidIds = ['level_50', 'res_500', 'paradox_3', 'first_daily', 'runs_20', 'meta_42', 'codex_all'];
+  const missing = wantIds.filter((i) => !achv.saved.includes(i));
+  const wrong = forbidIds.filter((i) => achv.saved.includes(i));
+  check(
+    missing.length === 0 && wrong.length === 0,
+    '端到端：本局达成的写入存档、未达成的没写（含长期成就）',
+    `写入 ${achv.savedCount} 条 · 缺 ${missing.join(',') || '无'} · 误写 ${wrong.join(',') || '无'}`,
+  );
+  check(
+    achv.stateAfter === 'result' && achv.bestLevel === 31 && achv.bestRes === 120,
+    '历史最佳（成就面板进度来源）随局更新',
+    `最佳 Lv${achv.bestLevel} · 共鸣 ${achv.bestRes}`,
+  );
+  check(achv.rows === achv.total && achv.got === achv.savedCount && achv.panelState === 'codex', '成就面板渲染（已解锁/未解锁 + 进度）', `${achv.got}/${achv.rows} 已解锁 · 「${achv.progress}」`);
+
   // 12.8 M3：角色特性 / 悖论难度 / 每日挑战 / 挑战解锁
   const m3 = await cdp.eval(`(() => {
     const g = __twinEcho;

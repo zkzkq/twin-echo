@@ -2,6 +2,10 @@ import './style.css';
 import { BAL } from './config/balance';
 import { EVOLUTIONS, PASSIVES, WEAPONS, passiveById, recompute, weaponById } from './config/items';
 import { META_NODES, metaPrereq } from './config/meta';
+import { diag } from './core/diagnostics';
+import {
+  ACHIEVEMENTS, EMPTY_CTX, achievementById, emitUnlock, evaluateAchievements, registerSink,
+} from './config/achievements';
 import { craftEvolution, satisfiableRecipes } from './game/altar';
 import { computeBonuses, totalMetaCost } from './game/meta';
 import { genChoices } from './game/upgrades';
@@ -14,6 +18,9 @@ function showErr(msg: string): void {
     el.classList.remove('hidden');
   }
 }
+
+// 会话与稳定性诊断（M3 验收）：必须在 Game 之前登记，才能判定"上一次会话是否正常收尾"
+diag.beginSession();
 
 const game = new Game();
 
@@ -28,19 +35,40 @@ const game = new Game();
 (window as unknown as { __meta?: unknown }).__meta = {
   META_NODES, metaPrereq, computeBonuses, totalMetaCost, genChoices,
 };
+// 诊断钩子（M3 验收）：崩溃率 / 回访 / 中位局时长
+(window as unknown as { __diag?: unknown }).__diag = diag;
+// 成就钩子（M3）：冒烟测试校验判定表、阈值与 Steamworks 适配层
+(window as unknown as { __achv?: unknown }).__achv = {
+  ACHIEVEMENTS, EMPTY_CTX, achievementById, evaluateAchievements, registerSink, emitUnlock,
+};
 
 game
   .init()
   .then(() => {
-    console.log('[Twin Echo] M1 原型已启动');
+    console.log('[Twin Echo] 原型已启动');
   })
   .catch((err: unknown) => {
-    showErr(err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err));
+    const msg = err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err);
+    diag.record('error', `init 失败：${msg}`);
+    showErr(msg);
   });
 
 window.addEventListener('error', (e) => {
+  diag.record('error', e.message, e.error instanceof Error ? e.error.stack : undefined, {
+    runId: game.telemetry.runIdNow(),
+    gameTime: game.world ? Math.round(game.world.time * 10) / 10 : undefined,
+  });
   showErr(e.message);
 });
 window.addEventListener('unhandledrejection', (e) => {
+  diag.record('rejection', String(e.reason), e.reason instanceof Error ? e.reason.stack : undefined, {
+    runId: game.telemetry.runIdNow(),
+    gameTime: game.world ? Math.round(game.world.time * 10) / 10 : undefined,
+  });
   showErr(String(e.reason));
+});
+// 正常收尾标记：崩溃率的分母/分子全靠它（漏标就会把正常退出算成崩溃）
+window.addEventListener('pagehide', () => diag.endSession());
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') diag.endSession();
 });

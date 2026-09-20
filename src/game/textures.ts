@@ -16,6 +16,8 @@ export interface TEX {
   ring: Texture;
   /** M3：鼠标准星（专用贴图——复用 ring 缩放后线宽只剩 2px，太淡） */
   reticle: Texture;
+  /** M3：视野迷雾（径向渐变：中心透明 → 边缘不透明），静止图书馆的视线遮蔽 */
+  fog: Texture;
   gem: Texture;
   heal: Texture;
   particle: Texture;
@@ -59,6 +61,30 @@ export function mixColor(a: number, b: number, t: number): number {
 }
 
 const WHITE = 0xffffff;
+
+/** 视野迷雾（M3）：256×256 的径向渐变，中心透明、边缘不透明；四角由最后一档填充为全不透明 */
+function makeFogTexture(): Texture {
+  const size = 256;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext('2d');
+  if (!ctx) return Texture.WHITE;
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  // 清空区到 0.55 半径为止——渲染时按"视野半径 = 0.55 × 半宽"来缩放
+  g.addColorStop(0, 'rgba(3,6,14,0)');
+  g.addColorStop(0.55, 'rgba(3,6,14,0.06)');
+  g.addColorStop(0.75, 'rgba(3,6,14,0.55)');
+  g.addColorStop(0.9, 'rgba(3,6,14,0.9)');
+  g.addColorStop(1, 'rgba(3,6,14,1)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return Texture.from(c);
+}
+
+/** 迷雾清空区在贴图半宽中的占比（渲染缩放要用；改渐变必须同步改这里） */
+export const FOG_CLEAR_RATIO = 0.55;
+export const FOG_TEX_SIZE = 256;
 
 export function makeTextures(renderer: Renderer): TEX {
   const gen = (draw: (g: Graphics) => void, resolution = 2): Texture => {
@@ -128,8 +154,7 @@ export function makeTextures(renderer: Renderer): TEX {
   });
 
   // 鼠标准星（M3）：外圈 + 中心点 + 四向刻度，即使缩到 32px 也读得出来
-  const reticle = gen((g) => {
-    g.circle(0, 0, 15).stroke({ width: 3, color: WHITE, alpha: 1 });
+  const reticle = gen((g) => {    g.circle(0, 0, 15).stroke({ width: 3, color: WHITE, alpha: 1 });
     g.circle(0, 0, 3).fill({ color: WHITE, alpha: 1 });
     for (let i = 0; i < 4; i++) {
       const a = (i * Math.PI) / 2;
@@ -139,8 +164,7 @@ export function makeTextures(renderer: Renderer): TEX {
     }
   });
 
-  const gem = gen((g) => {
-    g.poly([0, -8, 7, 0, 0, 8, -7, 0]).fill({ color: WHITE });
+  const gem = gen((g) => {    g.poly([0, -8, 7, 0, 0, 8, -7, 0]).fill({ color: WHITE });
   });
 
   const heal = gen((g) => {
@@ -193,7 +217,7 @@ export function makeTextures(renderer: Renderer): TEX {
 
   return {
     player, moth, idol, hopper, cultist, eliteRing, boss,
-    needle, bolt, butterfly, ring, reticle, gem, heal, particle, bulletE, altar, trail, tile,
+    needle, bolt, butterfly, ring, reticle, fog: makeFogTexture(), gem, heal, particle, bulletE, altar, trail, tile,
   };
 }
 

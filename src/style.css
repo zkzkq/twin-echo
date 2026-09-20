@@ -274,6 +274,23 @@ h2 { font-size: 24px; letter-spacing: 8px; margin-bottom: 18px; color: var(--amb
 .codexcard .cx-behavior { font-size: 12px; color: var(--text); }
 .codexcard .cx-tip { font-size: 12px; color: var(--cyan-b); }
 .codexcard .cx-kills { font-size: 11px; color: var(--dim); }
+/* ---------- 成就（M3，放在图鉴面板下半区） ---------- */
+#achvList {
+  display: flex; flex-direction: column; gap: 3px; margin: 6px 0 4px;
+  max-height: 30vh; overflow-y: auto; text-align: left;
+}
+.achvrow {
+  display: grid; grid-template-columns: 18px 120px 48px 1fr auto; gap: 8px; align-items: baseline;
+  border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px; font-size: 12px;
+  background: rgba(0, 0, 0, 0.28); opacity: 0.55;
+}
+.achvrow.got { opacity: 1; border-color: rgba(255, 210, 62, 0.45); background: rgba(255, 210, 62, 0.07); }
+.achvrow .av-icon { color: var(--gold); }
+.achvrow .av-name { font-weight: 700; color: var(--text); }
+.achvrow .av-tag { color: var(--dim); font-size: 11px; }
+.achvrow .av-desc { color: var(--dim); }
+.achvrow.got .av-desc { color: var(--text); }
+.achvrow .av-prog { color: var(--cyan-b); font-family: Consolas, monospace; font-size: 11px; }
 .metabranch { display: flex; flex-direction: column; gap: 6px; }
 .mb-title {
   font-size: 13px; letter-spacing: 3px; color: var(--cyan-b);

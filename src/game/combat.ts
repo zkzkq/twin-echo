@@ -14,6 +14,8 @@ export function nearestEnemy(w: World, x: number, y: number, maxR: number): Enem
   let bd = maxR * maxR;
   for (const e of tmp) {
     if (!e.active) continue;
+    // 视线遮蔽（M3 图书馆）：看不见的敌人不被自动索敌（范围武器仍会打到）
+    if (!w.sees(e.x, e.y)) continue;
     const d = (e.x - x) ** 2 + (e.y - y) ** 2;
     if (d < bd) {
       bd = d;
@@ -352,7 +354,7 @@ export function updateWeapons(w: World, dt: number): void {
       const dmg = weaponDamage(w, id);
       const targets: Enemy[] = [];
       w.hash.query(p.x, p.y, 604, tmp);
-      for (const e of tmp) if (e.active) targets.push(e);
+      for (const e of tmp) if (e.active && w.sees(e.x, e.y)) targets.push(e);
       if (targets.length === 0) {
         st.cd = 0.25;
         continue;
@@ -461,6 +463,7 @@ function nearestUnhit(w: World, x: number, y: number, maxR: number, hit: Set<num
   let bd = maxR * maxR;
   for (const e of tmp) {
     if (!e.active || hit.has(e.id)) continue;
+    if (!w.sees(e.x, e.y)) continue; // 电弧不跳向看不见的目标（M3 图书馆）
     const d = (e.x - x) ** 2 + (e.y - y) ** 2;
     if (d < bd) {
       bd = d;

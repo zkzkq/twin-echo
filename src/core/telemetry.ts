@@ -160,6 +160,11 @@ export class Telemetry {
     return this.runs.length;
   }
 
+  /** 当前局号（诊断上报用） */
+  runIdNow(): number {
+    return this.runId;
+  }
+
   clear(): void {
     this.runs = [];
     this.events = [];

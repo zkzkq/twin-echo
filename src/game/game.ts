@@ -1,11 +1,13 @@
-import { Application, Container, Sprite, TilingSprite } from 'pixi.js';
+import { Application, Container, Graphics, Sprite, TilingSprite } from 'pixi.js';
 import { BAL } from '../config/balance';
 import { AudioSys } from '../core/audio';
 import { Telemetry } from '../core/telemetry';
-import { COLORS, makeTextures, mixColor, TEX } from './textures';
+import { COLORS, FOG_CLEAR_RATIO, FOG_TEX_SIZE, makeTextures, mixColor, TEX } from './textures';
+import { diag } from '../core/diagnostics';
 import { UI, fmtTime, type SetupView } from './ui';
 import { applyChoice, genChoices, type Choice } from './upgrades';
 import { World, ECHO_BUF, type WorldEvent } from './world';
+import type { RunStats } from './types';
 import { craftEvolution, satisfiableRecipes } from './altar';
 import { eventLabel } from './events';
 import { canBuy, computeBonuses, totalMetaCost } from './meta';
@@ -17,6 +19,9 @@ import { MAPS, mapById, mapUnlocked } from '../config/maps';
 import { DIFFICULTIES } from '../config/difficulty';
 import type { Obstacle } from './terrain';
 import { CODEX } from '../config/bestiary';
+import {
+  ACHIEVEMENTS, EMPTY_CTX, achievementById, emitUnlock, evaluateAchievements, type AchievementContext,
+} from '../config/achievements';
 import { META_BRANCHES, META_NODES, metaCost, metaPrereq } from '../config/meta';
 import type { EvolutionDef } from '../config/items';
 
@@ -45,6 +50,14 @@ interface SaveData {
   codex: Record<string, number>;
   /** M3：鼠标操控的首次提示只弹一次 */
   pointerHinted?: boolean;
+  /** M3 成就：id → 解锁时间（ISO） */
+  achievements: Record<string, string>;
+  /** M3 成就进度：历史最佳（用于面板显示"最好一次打到多少"） */
+  runBest: {
+    level: number; kills: number; resHits: number; pincerHits: number;
+    syncMaxStreak: number; evolutions: number; elitesKilled: number;
+    bossKills: number; weapons: number; passives: number;
+  };
 }
 
 interface DailyRecord {
@@ -97,10 +110,18 @@ export class Game {
   private bgTile!: TilingSprite;
   /** M3：鼠标操控准星 */
   private reticle: Sprite | null = null;
+  /** M3：视野迷雾（静止图书馆的视线遮蔽） */
+  private fogRect: Graphics | null = null;
+  private fogSprite: Sprite | null = null;
 
   private saved: SaveData = {
     sand: 0, runs: 0, bestTime: 0, bestWin: false, firstRun: true, nodes: [],
     chars: [], challenges: [], bestParadox: 0, dailyBest: {}, dailyCleared: [], mapsBeaten: [], codex: {},
+    achievements: {},
+    runBest: {
+      level: 0, kills: 0, resHits: 0, pincerHits: 0, syncMaxStreak: 0,
+      evolutions: 0, elitesKilled: 0, bossKills: 0, weapons: 0, passives: 0,
+    },
   };
   /** M3：本局配置（角色 / 悖论 / 地图 / 是否每日挑战） */
   private runOptions: RunOptions = { character: 'otto', paradox: 0, daily: false, map: 'plain' };
@@ -133,6 +154,14 @@ export class Game {
     this.reticle.alpha = 1;
     this.reticle.visible = false;
     this.fxC.addChild(this.reticle);
+    // 视野迷雾（M3 静止图书馆）：屏幕空间的暗幕 + 贴住玩家的径向渐变；只在有视野限制的地图显示
+    this.fogRect = new Graphics();
+    this.fogRect.rect(0, 0, 1, 1).fill({ color: 0x03060e, alpha: 1 });
+    this.fogRect.visible = false;
+    this.fogSprite = new Sprite(this.tex.fog);
+    this.fogSprite.anchor.set(0.5);
+    this.fogSprite.visible = false;
+    this.app.stage.addChild(this.fogRect, this.fogSprite);
     // 地形障碍精灵池（随相机附近区块动态绑定）
     for (let i = 0; i < 64; i++) {
       const s = new Sprite(this.tex.ring);
@@ -162,7 +191,7 @@ export class Game {
       closeCodex: () => this.closeCodex(),
       buyMeta: (id) => this.buyMeta(id),
       exportSave: () => this.exportSave(),
-      importSave: () => this.importSave(),
+      exportReport: () => this.exportReport(),      importSave: () => this.importSave(),
       openSetup: () => this.openSetup(),
       closeSetup: () => this.closeSetup(),
       selectChar: (id) => this.selectChar(id),
@@ -415,6 +444,21 @@ export class Game {
       if (on) this.reticle.position.set(w.pointer.x, w.pointer.y);
     }
 
+    // 视野迷雾（M3 静止图书馆）：屏幕空间暗幕 + 中心透明渐变（清空区 = 视野半径）
+    if (this.fogRect && this.fogSprite) {
+      const R = w.visionR();
+      const showFog = R > 0;
+      this.fogRect.visible = showFog;
+      this.fogSprite.visible = showFog;
+      if (showFog) {
+        this.fogRect.width = scr.width;
+        this.fogRect.height = scr.height;
+        this.fogSprite.position.set(this.worldC.position.x + w.player.x, this.worldC.position.y + w.player.y);
+        const half = R / FOG_CLEAR_RATIO; // 清空区半径 = 视野半径
+        this.fogSprite.scale.set((half * 2) / FOG_TEX_SIZE);
+      }
+    }
+
     // 地形障碍（地图 1/2/3 的齿轮与书架）：只同步相机附近区块
     const near = w.obstaclesNear(w.camX, w.camY, this.obstacleScratch);
     for (let i = 0; i < this.obstacleSprites.length; i++) {
@@ -462,6 +506,13 @@ export class Game {
     for (const e of w.enemies.items) {
       const s = e.sprite;
       if (!e.active) {
+        if (s.visible) s.visible = false;
+        if (e.ring && e.ring.visible) e.ring.visible = false;
+        continue;
+      }
+      // 视线遮蔽（M3 图书馆）：看不见的敌人不画出来；Boss/精英体积大、动静大，始终可见（否则 Boss 战没法读）
+      const visible = e.boss || e.elite || w.sees(e.x, e.y);
+      if (!visible) {
         if (s.visible) s.visible = false;
         if (e.ring && e.ring.visible) e.ring.visible = false;
         continue;
@@ -926,11 +977,29 @@ export class Game {
     this.state = this.metaReturn;
   }
 
-  /** 图鉴（M3）：标题页可开，暂停页也能查（遇到新敌人后随时想看一眼） */
+  /** 图鉴 + 成就面板（M3）：图鉴未解锁显示剪影；成就显示历史最佳进度 */
   openCodex(): void {
     this.codexReturn = this.state;
     this.state = 'codex';
-    this.ui.showCodex(CODEX, this.saved.codex, CODEX.map((c) => c.id));
+    const B = this.saved.runBest;
+    const ctx: AchievementContext = {
+      ...EMPTY_CTX,
+      win: this.saved.bestWin, paradox: this.saved.bestParadox,
+      level: B.level, kills: B.kills, resHits: B.resHits, pincerHits: B.pincerHits,
+      syncMaxStreak: B.syncMaxStreak, evolutions: B.evolutions, elitesKilled: B.elitesKilled,
+      bossKills: B.bossKills, weapons: B.weapons, passives: B.passives,
+      runs: this.saved.runs, mapsBeaten: this.saved.mapsBeaten.length,
+      metaNodes: this.saved.nodes.length,
+      codexSeen: CODEX.filter((c) => (this.saved.codex[c.id] ?? 0) > 0).length,
+    };
+    this.ui.showCodex(
+      CODEX, this.saved.codex, CODEX.map((c) => c.id),
+      ACHIEVEMENTS.map((a) => ({
+        name: a.name, desc: a.desc, category: a.category,
+        unlocked: !!this.saved.achievements[a.id],
+        progress: a.progress ? a.progress(ctx) : '',
+      })),
+    );
   }
 
   private closeCodex(): void {
@@ -982,8 +1051,70 @@ export class Game {
   }
 
   /** 导出/导入存档码（GDD §11.2：localStorage + 导出码 → M3 接 Steam Cloud） */
-  exportSave(): void {
-    const code = btoa(unescape(encodeURIComponent(JSON.stringify(this.saved))));
+  /**
+   * M3 验收报告导出：把三条 Exit Criteria 的实测值 + 原始数据落成一个 Markdown 文件。
+   * 用途：15 人试玩时让每位试玩者点一次，回传的文件可直接离线聚合（含 playDays 原始日期）。
+   */
+  exportReport(): void {
+    const md = diag.report(this.telemetry.runCount(), {
+      character: this.runOptions.character,
+      map: this.runOptions.map,
+      difficulty: this.runOptions.difficulty,
+    });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const blob = new Blob([`\uFEFF${md}`], { type: 'text/markdown;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `twin-echo-acceptance-${stamp}.md`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    this.ui.toast('验收报告已导出（含崩溃率 / 3 日回访 / 中位局时长）', 'cyan');
+  }
+
+  /**
+   * 成就评估（M3）：局末统一判定 → 写入存档 + toast + 遥测 + Steamworks 适配层转发。
+   * 返回本次新解锁的 id（结算页显示用）。
+   */
+  private checkAchievements(w: World, st: RunStats, win: boolean): string[] {
+    const ctx: AchievementContext = {
+      time: w.time, win, level: w.player.level, kills: st.kills,
+      resHits: st.resHits, pincerHits: st.pincerHits, syncMaxStreak: st.syncMaxStreak,
+      evolutions: w.player.evolutions.size, weapons: w.player.weapons.size, passives: w.player.passives.size,
+      bossKills: st.bossKills, elitesKilled: st.elitesKilled,
+      paradox: w.run.paradox, isDaily: this.runIsDaily,
+      runs: this.saved.runs,
+      mapsBeaten: this.saved.mapsBeaten.length,
+      metaNodes: this.saved.nodes.length,
+      codexSeen: CODEX.filter((c) => (this.saved.codex[c.id] ?? 0) > 0).length,
+    };
+    const fresh = evaluateAchievements(ctx, this.saved.achievements);
+    const stampNow = new Date().toISOString();
+    // 历史最佳（供成就面板显示"最好一次打到多少"）
+    const B = this.saved.runBest;
+    B.level = Math.max(B.level, ctx.level);
+    B.kills = Math.max(B.kills, ctx.kills);
+    B.resHits = Math.max(B.resHits, ctx.resHits);
+    B.pincerHits = Math.max(B.pincerHits, ctx.pincerHits);
+    B.syncMaxStreak = Math.max(B.syncMaxStreak, ctx.syncMaxStreak);
+    B.evolutions = Math.max(B.evolutions, ctx.evolutions);
+    B.elitesKilled = Math.max(B.elitesKilled, ctx.elitesKilled);
+    B.bossKills = Math.max(B.bossKills, ctx.bossKills);
+    B.weapons = Math.max(B.weapons, ctx.weapons);
+    B.passives = Math.max(B.passives, ctx.passives);
+    const now = new Date().toISOString();
+    for (const id of fresh) {
+      this.saved.achievements[id] = stampNow;
+      const a = achievementById(id);
+      if (a) {
+        this.ui.toast(`🏆 成就解锁：${a.name} —— ${a.desc}`, 'gold');
+        this.telemetry.log(w.time, 'achievement', { id, name: a.name });
+      }
+      emitUnlock(id); // Steamworks 适配层（未注册则无操作）
+    }
+    return fresh;
+  }
+
+  exportSave(): void {    const code = btoa(unescape(encodeURIComponent(JSON.stringify(this.saved))));
     void navigator.clipboard?.writeText(code).then(
       () => this.ui.toast('存档码已复制到剪贴板（含时砂与密库进度）', 'cyan'),
       () => this.ui.toast(`存档码：${code.slice(0, 60)}…（复制失败，请手动选取）`),
@@ -1031,7 +1162,11 @@ export class Game {
     });
     if (this.saved.firstRun) {
       // §9 教学 0:00–0:10：移动是第一课（强提示 + 敌人从四周来）
-      this.ui.toast('移动：W A S D / 方向键 —— 敌人会从四周涌来，别停下', 'cyan');
+      this.ui.toast('移动：W A S D / 方向键，或按住鼠标左键朝光标移动 —— 敌人会从四周涌来，别停下', 'cyan');
+    }
+    // 地图专属机制提示（M3）：视线遮蔽需要在开局就讲清楚，否则玩家会以为"武器坏了"
+    if (this.world.visionR() > 0) {
+      this.ui.toast(`视野受限：视野半径 ${this.world.visionR()}px 外、以及书架背后的敌人看不见也不会被自动索敌（范围武器仍会命中）`, 'cyan');
     }
     if (daily) this.ui.toast(`每日挑战：${mods.dailyModName} —— ${mods.dailyModDesc}`, 'cyan');
     this.ui.hideAll();
@@ -1160,6 +1295,9 @@ export class Game {
     // M3：图鉴击杀统计并入存档（遇到即解锁）
     for (const [k, v] of w.codex) this.saved.codex[k] = (this.saved.codex[k] ?? 0) + v;
 
+    // M3：成就评估（局末统一判定——不在战斗热路径埋点，也不用担心中途崩溃丢判定）
+    const unlockedNow = this.checkAchievements(w, st, win);
+
     this.saved.firstRun = false;
     this.save();
 
@@ -1207,6 +1345,8 @@ export class Game {
       deathX: Math.round(w.player.x),
       deathY: Math.round(w.player.y),
     });
+    // M3 验收：登记本局存活时长（中位局时长的原始数据）
+    diag.noteRun(w.time, this.telemetry.runIdNow());
 
     this.ui.showResult({
       win,

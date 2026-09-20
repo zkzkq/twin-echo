@@ -101,8 +101,7 @@ const rerolls = eventRows.filter((e) => e.event === 'levelup_reroll').length;
 
 console.log('—— 试玩 KPI 汇总 ——');
 console.log(`局数 ${runRows.length} · 胜率 ${Math.round((wins.length / runRows.length) * 100)}%`);
-console.log(`存活：中位 ${median(survival).toFixed(1)}min（GDD §14 目标 ≥11min；10min MVP 局的可玩下限建议 ≥6min）`);
-console.log(`终局等级：中位 ${median(runRows.map((r) => num(r.level)))}（§7 目标 42–48@20min / MVP ≈26@10min）`);
+console.log(`存活：中位 ${median(survival).toFixed(1)}min（GDD §14 目标 ≥11min；10min MVP 局的可玩下限建议 ≥6min）`);console.log(`终局等级：中位 ${median(runRows.map((r) => num(r.level)))}（§7 目标 42–48@20min / MVP ≈26@10min）`);
 console.log(`击杀：中位 ${Math.round(median(runRows.map((r) => num(r.kills))))}`);
 console.log(`共鸣覆盖率：中位 ${median(coverage).toFixed(1)}%（§5.2 目标 30–45%）`);
 console.log(`同步爆发：中位 ${median(bursts)} 次/局 · 间隔中位 ${burstGaps.length ? median(burstGaps).toFixed(0) + 's' : '—'}（§5.3 目标 60–90s）`);
@@ -146,3 +145,27 @@ for (const r of runRows) {
 const top = (m) => [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, v]) => `${k}×${v}`).join(' · ');
 console.log(`\n武器拿取率：${top(wCount)}`);
 console.log(`被动拿取率：${top(pCount)}`);
+
+// ---- M3 Exit Criteria（活文档 §12.2）：三条都必须由真人数据裁决 ----
+const medMin = median(survival);
+const judge = (ok, label, detail) => console.log(`${ok ? '✓' : '✗'} ${label}：${detail}`);
+console.log('\n—— M3 Exit Criteria ——');
+judge(medMin >= 18, '中位局时长 ≥18min', `${medMin.toFixed(1)}min（n=${runRows.length}）`);
+judge(median(coverage) <= 25, '共鸣覆盖率（诊断量，仅供观察）', `${median(coverage).toFixed(1)}%`);
+const perMin = median(runRows.map((r) => num(r.resonancePerMin)));
+judge(perMin >= 50 && perMin <= 120, '共鸣击频率（主 KPI 50–120/分）', `${perMin.toFixed(1)}/分`);
+judge(median(bursts) >= 2, '同步爆发 ≥2 次/局（§5.3 新手下限）', `中位 ${median(bursts)} 次`);
+
+// 验收报告（每人一份 markdown，含崩溃率与游玩日）
+const reports = collect(process.argv[2] ?? 'telemetry').filter((f) => f.toLowerCase().endsWith('.md')).length;
+const dirs = inputs.filter((p) => statSync(p, { throwIfNoEntry: false })?.isDirectory() ?? false);
+let reportFiles = 0;
+for (const d of dirs) {
+  for (const f of readdirSync(d)) if (f.toLowerCase().endsWith('.md')) reportFiles++;
+}
+void reports;
+console.log(
+  reportFiles > 0
+    ? `\n发现 ${reportFiles} 份验收报告（twin-echo-acceptance-*.md）：崩溃率与 3 日回访在其中，逐份查表即可。`
+    : '\n未发现验收报告（twin-echo-acceptance-*.md）：崩溃率与 3 日回访拿不到，请让试玩者点标题页「导出验收报告」。',
+);

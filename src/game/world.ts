@@ -134,9 +134,55 @@ export class World {
   private hazardT = 0;
   /** 障碍查询复用缓冲（零分配） */
   private obstacleScratch: Obstacle[] = [];
+  /** 视线判定用的障碍缓冲 + 每帧缓存（sees() 会被渲染与索敌高频调用） */
+  private visionList: Obstacle[] = [];
+  private visionFrame = -1;
 
   get mapDef(): MapDef {
     return mapById(this.run.map);
+  }
+
+  /** 视野半径（0 = 无遮蔽）——由地图决定，见 GDD §6.7「静止图书馆」 */
+  visionR(): number {
+    return this.mapDef.visionR;
+  }
+
+  /**
+   * 视线判定（M3「静止图书馆」）：视野半径内、且射线不被书架挡住 → 可见。
+   * 用途：**自动索敌**（combat.nearestEnemy）与**渲染**——不可见的敌人照常行动、也能被范围武器打到，
+   * 只是"看不见也瞄不到"。遮掩的是威胁感知与索敌能力，不是惩罚玩家。
+   */
+  sees(x: number, y: number): boolean {
+    const R = this.mapDef.visionR;
+    if (R <= 0) return true;
+    const p = this.player;
+    const dx = x - p.x;
+    const dy = y - p.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 > R * R) return false;
+    if (d2 < 1) return true;
+    const d = Math.sqrt(d2);
+    const ux = dx / d;
+    const uy = dy / d;
+    for (const o of this.visionObstacles()) {
+      const ox = o.x - p.x;
+      const oy = o.y - p.y;
+      const t = ox * ux + oy * uy; // 障碍中心在射线上的投影距离
+      if (t <= 0 || t >= d) continue; // 在射线之外（身后或目标之后）
+      const perp2 = ox * ox + oy * oy - t * t;
+      const rr = o.r * 0.85; // 略放宽：书架边缘擦过不算完全遮挡
+      if (perp2 < rr * rr) return false;
+    }
+    return true;
+  }
+
+  /** 每帧只取一次附近障碍（sees 的频率很高，别在循环里反复重建列表） */
+  private visionObstacles(): Obstacle[] {
+    if (this.visionFrame !== this.frame) {
+      this.visionFrame = this.frame;
+      this.obstaclesNear(this.player.x, this.player.y, this.visionList);
+    }
+    return this.visionList;
   }
 
   /** 取 (x,y) 周围 3×3 区块内的障碍（带缓存，供碰撞与渲染共用） */
