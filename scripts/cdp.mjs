@@ -95,8 +95,7 @@ export const BOT_FN = `window.__bot = (f) => {
   w.input.x = dx / L; w.input.y = dy / L;
 };`;
 
-/** 生存优先机器人（量测"会风筝的玩家"上限）：远离最近敌人，只顺路吃安全宝石 */
-export const BOT_SAFE_FN = `window.__botSafe = (f) => {
+/** 生存优先机器人（量测"会风筝的玩家"上限）：远离最近敌人，只顺路吃安全宝石 */export const BOT_SAFE_FN = `window.__botSafe = (f) => {
   const w = __twinEcho.world;
   const p = w.player;
   let ex = 0, ey = 0, ed = Infinity;
@@ -126,6 +125,90 @@ export const BOT_SAFE_FN = `window.__botSafe = (f) => {
   }
   const L = Math.hypot(dx, dy) || 1;
   w.input.x = dx / L; w.input.y = dy / L;
+};`;
+
+/**
+ * 会躲弹幕的机器人（用于难度自动化校准）——**混合策略版**。
+ *
+ * 三次迭代的实测教训（别回退到"纯规避"）：
+ *   v1 纯规避（弹幕/危险区/敌人三者合成，威胁高就放弃吃宝石）→ 存活 3.5–3.6min，共鸣 61/分
+ *   v2 收紧敌人排斥半径到 90px → 更差（3.1min）：前 3 分钟场上没有弹幕，掉血全看敌人回避半径
+ *   v3 加方向承诺（指数平滑）→ 仍 3.1–3.3min
+ *   结论：**纯规避会脱离交战**——宝石在怪堆里，躲开怪堆就没经验、没等级、没火力（等级 8–15 vs 贪宝石 18–19，
+ *   共鸣 24–61/分 vs 89–127/分），死得更早。
+ *   故本版改为混合：**基座沿用贪宝石策略（保证练级与交战），只在其上叠加弹道/危险区侧移**。
+ */
+export const BOT_DODGE_FN = `window.__botDir = null;
+window.__botDodge = (f) => {
+  const w = __twinEcho.world;
+  const p = w.player;
+
+  // ① 基座：沿用贪宝石机器人的策略（交战与练级优先）
+  let ex = 0, ey = 0, ed = Infinity;
+  for (const en of w.enemies.items) {
+    if (!en.active) continue;
+    const d = (en.x - p.x) ** 2 + (en.y - p.y) ** 2;
+    if (d < ed) { ed = d; ex = en.x; ey = en.y; }
+  }
+  const eDist = Number.isFinite(ed) ? Math.sqrt(ed) : Infinity;
+  let dx = 0, dy = 0;
+  if (eDist < 130) {
+    dx = p.x - ex; dy = p.y - ey;                    // 贴身 → 退开
+  } else {
+    let gx = 0, gy = 0, gd = Infinity;
+    for (const gm of w.gems.items) {
+      if (!gm.active) continue;
+      const d = (gm.x - p.x) ** 2 + (gm.y - p.y) ** 2;
+      if (d < gd) { gd = d; gx = gm.x; gy = gm.y; }
+    }
+    if (gd < Infinity) { dx = gx - p.x; dy = gy - p.y; }
+    else { const a = f * 0.004; dx = Math.cos(a); dy = Math.sin(a); }
+  }
+  const bl = Math.hypot(dx, dy) || 1;
+  dx /= bl; dy /= bl;                                // 基座单位向量
+
+  // ② 叠加：弹幕垂直侧移（不替代基座，只偏移）
+  let dodgeX = 0, dodgeY = 0;
+  for (const b of w.bullets.items) {
+    if (!b.active || !b.hostile) continue;
+    const bx = p.x - b.x, by = p.y - b.y;
+    const d2 = bx * bx + by * by;
+    if (d2 > 320 * 320) continue;
+    const sp = Math.hypot(b.vx, b.vy) || 1;
+    const ux = b.vx / sp, uy = b.vy / sp;
+    const along = bx * ux + by * uy;
+    if (along <= 0) continue;                        // 已飞过的不算
+    const perp = bx * uy - by * ux;
+    const miss = Math.abs(perp);
+    const danger = Math.max(0, 1 - miss / 80) * Math.max(0, 1 - Math.sqrt(d2) / 320);
+    if (danger <= 0.02) continue;
+    const sign = perp >= 0 ? 1 : -1;
+    dodgeX += -uy * sign * danger * 1.8;
+    dodgeY += ux * sign * danger * 1.8;
+  }
+  // ③ 叠加：危险区规避（预警期撤离，这是免费的撤离窗口）
+  for (const h of w.hazards.items) {
+    if (!h.active) continue;
+    const hx = p.x - h.x, hy = p.y - h.y;
+    const d = Math.hypot(hx, hy) || 1;
+    const safeR = h.r + 60;
+    if (d >= safeR) continue;
+    const danger = Math.max(0, 1 - d / safeR) * (h.tele > 0 ? 1.5 : 1.1);
+    dodgeX += (hx / d) * danger * 1.6;
+    dodgeY += (hy / d) * danger * 1.6;
+  }
+
+  dx += dodgeX;
+  dy += dodgeY;
+
+  // ④ 方向承诺：指数平滑，避免在弹道两侧每 3 帧翻转（抖动 = 原地不动 = 被围死）
+  const prev = window.__botDir;
+  if (prev) { dx = prev.x * 0.72 + dx * 0.28; dy = prev.y * 0.72 + dy * 0.28; }
+  if (Math.hypot(dx, dy) < 0.05) { const a = f * 0.01; dx = Math.cos(a); dy = Math.sin(a); }
+  const L = Math.hypot(dx, dy) || 1;
+  const nx = dx / L, ny = dy / L;
+  window.__botDir = { x: nx, y: ny };
+  w.input.x = nx; w.input.y = ny;
 };`;
 
 export class CDP {

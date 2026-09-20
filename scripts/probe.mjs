@@ -6,7 +6,7 @@
  * 这是 M0 的引擎内版本：比 scripts/sim.ts 的解析模型可信，因为它跑的就是游戏本体。
  * 运行：pnpm probe（需 dev server 已启动）
  */
-import { openApp, BOT_FN, BOT_SAFE_FN } from './cdp.mjs';
+import { openApp, BOT_FN, BOT_SAFE_FN, BOT_DODGE_FN } from './cdp.mjs';
 
 const APP_URL = process.env.APP_URL ?? 'http://127.0.0.1:4173/';
 const RUNS = Number(process.env.PROBE_RUNS ?? 1);
@@ -28,9 +28,16 @@ try {
       window.__P = { f: 0, peak: 0, samples: [] }; return 1; })()`);
     await cdp.eval(BOT_FN);
     await cdp.eval(BOT_SAFE_FN);
-    // PROBE_BOT=greedy（默认，贪宝石）| safe（生存优先）
-    const botCall = process.env.PROBE_BOT === 'safe' ? 'window.__botSafe(P.f)' : 'window.__bot(P.f)';
-    console.log(`\n===== 第 ${run + 1} 局（机器人：风筝走位 / 满共鸣即爆发 / 自动选卡）=====`);
+    await cdp.eval(BOT_DODGE_FN);
+    // PROBE_BOT=greedy（默认，贪宝石）| safe（生存优先）| dodge（会躲弹幕）
+    const botKind = process.env.PROBE_BOT ?? 'greedy';
+    const botCall =
+      botKind === 'dodge' ? 'window.__botDodge(P.f)'
+        : botKind === 'safe' ? 'window.__botSafe(P.f)'
+          : 'window.__bot(P.f)';
+    // 躲弹幕需要更高决策频率（10 帧 = 167ms 太慢）
+    const botEvery = botKind === 'dodge' ? 3 : 10;
+    console.log(`\n===== 第 ${run + 1} 局（机器人：${botKind === 'dodge' ? '躲弹幕' : botKind === 'safe' ? '生存优先' : '贪宝石'} / 满共鸣即爆发 / 自动选卡）=====`);
     console.log(' 分钟  击杀/分  累计击杀  同屏  等级   HP   共鸣覆盖  爆发 Boss 结晶 进化 祭坛 事件');
 
     let died = false;
@@ -41,7 +48,7 @@ try {
         const g = __twinEcho, w = g.world, P = window.__P;
         let died = false;
         for (let i = 0; i < ${FRAMES_PER_CHUNK}; i++) {
-          if (P.f % 10 === 0) ${botCall};
+          if (P.f % ${botEvery} === 0) ${botCall};
           if (w.player.gauge >= 100) w.tryBurst();
           w.update(1 / 60);
           P.f++;
