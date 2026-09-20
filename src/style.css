@@ -264,6 +264,38 @@ h2 { font-size: 24px; letter-spacing: 8px; margin-bottom: 18px; color: var(--amb
 .metanode.locked { opacity: 0.45; cursor: default; }
 .metanode.locked .mn-cost { color: var(--dim); }
 
+/* ---------- 标准局配置（角色 / 悖论 / 每日） ---------- */
+.cfgline { font-size: 13px; color: var(--dim); margin-bottom: 14px; letter-spacing: 1px; }
+.cfgline b { color: var(--amber-b); }
+.cfgline i { color: var(--cyan-b); font-style: normal; }
+.setupsection { text-align: left; margin-bottom: 16px; }
+.ss-title { font-size: 12px; letter-spacing: 3px; color: var(--cyan-b); border-bottom: 1px solid var(--line); padding-bottom: 4px; margin-bottom: 8px; }
+.chargrid { display: grid; grid-template-columns: repeat(3, minmax(190px, 1fr)); gap: 8px; max-height: 34vh; overflow-y: auto; }
+.charcard {
+  display: flex; flex-direction: column; gap: 2px; text-align: left; cursor: pointer; font-family: inherit;
+  background: rgba(0, 0, 0, 0.4); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; color: var(--text);
+}
+.charcard .cc-top { display: flex; justify-content: space-between; align-items: center; }
+.charcard .cc-name { font-size: 13px; font-weight: 700; }
+.charcard .cc-glyph { font-size: 16px; color: var(--amber-b); font-weight: 700; }
+.charcard .cc-role { font-size: 11px; color: var(--dim); }
+.charcard .cc-trait { font-size: 11.5px; color: var(--text); line-height: 1.5; }
+.charcard .cc-cost { font-size: 11px; font-family: Consolas, monospace; color: var(--gold); }
+.charcard.selected { border-color: var(--amber-b); box-shadow: 0 0 18px rgba(232, 163, 61, 0.25); }
+.charcard.locked { opacity: 0.5; }
+.charcard.locked .cc-cost { color: var(--dim); }
+.paraRow { display: flex; gap: 6px; flex-wrap: wrap; }
+.parabtn {
+  cursor: pointer; font-family: inherit; background: rgba(0, 0, 0, 0.4); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 12px; color: var(--text); font-size: 12.5px; text-align: center;
+}
+.parabtn small { display: block; font-size: 10.5px; color: var(--dim); }
+.parabtn.selected { border-color: var(--red); box-shadow: 0 0 18px rgba(255, 92, 92, 0.22); }
+.parabtn.locked { opacity: 0.4; cursor: default; }
+.dailyline { font-size: 13px; line-height: 1.8; color: var(--text); }
+.dailyline b { color: var(--cyan-b); }
+.dailyline .dimb { color: var(--dim); }
+
 #errbanner {
   position: fixed; top: 0; left: 0; right: 0; z-index: 100;
   background: #7a1f1f; color: #ffd9d9; font: 13px Consolas, monospace;

@@ -31,10 +31,11 @@ export function weaponDamage(w: World, id: string): number {
   return def.base * (1 + 0.1 * (st.lv - 1)) * (1 + w.player.stats.dmg + w.evoDmgBonus);
 }
 
-/** 攻击间隔乘区：急速 × 冷却（叠乘，下限 §16 的 0.4×） */
+/** 攻击间隔乘区：急速 × 冷却（叠乘，下限 §16 的 0.4×）；诺恩的爆发后攻速为临时乘区 */
 export function atkMult(w: World): number {
   const s = w.player.stats;
-  return Math.max(BAL.weapons.atkFloor, (1 - s.atkSpd) * (1 - s.cd));
+  const burst = w.burstHasteT > 0 ? 1 - w.run.burstHastePct : 1;
+  return Math.max(BAL.weapons.atkFloor, (1 - s.atkSpd) * (1 - s.cd) * burst);
 }
 
 /** 武器范围乘区（幅域被动；残影侧另乘 echoRange） */
@@ -97,7 +98,9 @@ export function applyDamage(
     }
   }
 
-  if (src === 'echo') dmg *= BAL.echo.coeff;
+  if (src === 'echo') dmg *= w.run.echoCoeff;
+  // 角色「断剑士·凯」等：本体伤害流（只作用于 body）
+  else if (w.run.bodyDmgPct !== 0) dmg *= 1 + w.run.bodyDmgPct;
 
   let crit = false;
   if (opts.forceCrit) {
@@ -512,8 +515,9 @@ export function tryBurst(w: World): boolean {
   w.stats.bursts++;
   p.invulnT = Math.max(p.invulnT, BAL.burst.invuln + w.meta.burstInvulnBonus);
 
-  const radius = BAL.burst.radius * (1 + w.meta.burstRadiusPct);
+  const radius = BAL.burst.radius * (1 + w.meta.burstRadiusPct + w.run.burstRadiusPct);
   const dmg = panelDps(w) * BAL.burst.dpsMult * (1 + w.meta.burstDmgPct);
+  if (w.run.burstHastePct > 0) w.burstHasteT = 3; // 诺恩：爆发后 3s 攻速加成
   const R2 = radius * radius;
   w.hash.query(p.x, p.y, radius + 60, tmp);
   for (const e of tmp) {

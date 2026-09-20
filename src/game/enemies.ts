@@ -62,9 +62,9 @@ export function spawnEnemy(w: World, kind: EnemyKind, x: number, y: number, elit
     const def = BAL.bosses.find((b) => b.kind === bossKind) ?? BAL.bosses[0]!;
     e.elite = false;
     e.boss = true;
-    e.maxHp = e.hp = def.hp;
-    e.speed = def.speed;
-    e.dmg = def.dmg;
+    e.maxHp = e.hp = Math.round(def.hp * (1 + w.run.bossHpPct));
+    e.speed = def.speed * (1 + w.run.enemySpeedPct);
+    e.dmg = Math.round(def.dmg * (1 + w.run.enemyDmgPct));
     e.xpVal = 0;
     e.radius = def.radius;
     e.armor = def.armor;
@@ -81,8 +81,8 @@ export function spawnEnemy(w: World, kind: EnemyKind, x: number, y: number, elit
     e.boss = false;
     const hpMult = BAL.enemyHpScale(m) * (elite ? BAL.elite.hpMult : 1);
     e.maxHp = e.hp = Math.round(b.hp0 * hpMult);
-    e.speed = b.speed;
-    e.dmg = b.dmg + (elite ? 2 : 0);
+    e.speed = b.speed * (1 + w.run.enemySpeedPct);
+    e.dmg = Math.max(1, Math.round((b.dmg + (elite ? 2 : 0)) * (1 + w.run.enemyDmgPct)));
     e.xpVal = b.xp;
     e.radius = b.radius * (elite ? BAL.elite.sizeMult : 1);
     e.armor = elite ? 4 : 0;

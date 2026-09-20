@@ -3,12 +3,16 @@ import { BAL } from '../config/balance';
 import { AudioSys } from '../core/audio';
 import { Telemetry } from '../core/telemetry';
 import { COLORS, makeTextures, mixColor, TEX } from './textures';
-import { UI } from './ui';
+import { UI, fmtTime, type SetupView } from './ui';
 import { applyChoice, genChoices, type Choice } from './upgrades';
 import { World, ECHO_BUF, type WorldEvent } from './world';
 import { craftEvolution, satisfiableRecipes } from './altar';
 import { eventLabel } from './events';
 import { canBuy, computeBonuses, totalMetaCost } from './meta';
+import { computeRunMods, type RunOptions } from './runconfig';
+import { CHARACTERS, characterById } from '../config/characters';
+import { PARADOX, paradoxSandMult } from '../config/paradox';
+import { DAILY_FIRST_CLEAR_SAND, dailyCharacterId, dailyKey, dailySeed, dailyMod } from '../config/daily';
 import { META_BRANCHES, META_NODES, metaCost, metaPrereq } from '../config/meta';
 import type { EvolutionDef } from '../config/items';
 
@@ -22,11 +26,26 @@ interface SaveData {
   firstRun: boolean;
   /** 已解锁的密库节点（GDD §6.8.2） */
   nodes: string[];
+  /** M3：已用时砂解锁的角色 id */
+  chars: string[];
+  /** M3：已达成的挑战解锁（提克/诺恩） */
+  challenges: string[];
+  /** M3：已通关的最高悖论等级 */
+  bestParadox: number;
+  /** M3：每日挑战记录（日期键 → 最佳成绩）与已领奖日期 */
+  dailyBest: Record<string, { time: number; kills: number; level: number }>;
+  dailyCleared: string[];
+}
+
+interface DailyRecord {
+  time: number;
+  kills: number;
+  level: number;
 }
 
 const SAVE_KEY = 'twinEcho.save';
 
-type GameState = 'title' | 'run' | 'levelup' | 'pause' | 'result' | 'altar' | 'meta';
+type GameState = 'title' | 'run' | 'levelup' | 'pause' | 'result' | 'altar' | 'meta' | 'setup';
 
 export class Game {
   readonly app = new Application();
@@ -48,6 +67,12 @@ export class Game {
   private altarOptions: EvolutionDef[] = [];
   /** 打开密库前的界面（用于返回） */
   private metaReturn: GameState = 'title';
+  /** 打开配置面板前的界面（用于返回） */
+  private setupReturn: GameState = 'title';
+  /** 本局是否为每日挑战（用于结算奖励与榜单） */
+  private runIsDaily = false;
+  /** 挑战追踪：5 分钟内的最高等级（提克） */
+  private lvAt5min = 0;
   private prevHp = 100;
   private rainbowIdx = 0;
 
@@ -59,7 +84,12 @@ export class Game {
   private fxC = new Container();
   private bgTile!: TilingSprite;
 
-  private saved: SaveData = { sand: 0, runs: 0, bestTime: 0, bestWin: false, firstRun: true, nodes: [] };
+  private saved: SaveData = {
+    sand: 0, runs: 0, bestTime: 0, bestWin: false, firstRun: true, nodes: [],
+    chars: [], challenges: [], bestParadox: 0, dailyBest: {}, dailyCleared: [],
+  };
+  /** M3：本局配置（角色 / 悖论 / 是否每日挑战） */
+  private runOptions: RunOptions = { character: 'otto', paradox: 0, daily: false };
 
   async init(): Promise<void> {
     await this.app.init({
@@ -98,6 +128,11 @@ export class Game {
       buyMeta: (id) => this.buyMeta(id),
       exportSave: () => this.exportSave(),
       importSave: () => this.importSave(),
+      openSetup: () => this.openSetup(),
+      closeSetup: () => this.closeSetup(),
+      selectChar: (id) => this.selectChar(id),
+      selectParadox: (lvl) => this.selectParadox(lvl),
+      startDaily: () => this.startDaily(),
     });
 
     this.loadSave();
@@ -118,6 +153,7 @@ export class Game {
 
     this.app.ticker.add((tk) => this.tick(tk));
     this.ui.showTitle();
+    this.refreshTitleConfig();
     this.ready = true;
   }
 
@@ -168,6 +204,12 @@ export class Game {
         if (k === '1' || k === '2' || k === '3') this.doEvolve(Number(k) - 1);
         else if (k === 'escape') this.closeAltar();
         break;
+      case 'setup':
+        if (k === 'escape' || k === 'enter') this.closeSetup();
+        break;
+      case 'meta':
+        if (k === 'escape' || k === 'enter') this.closeMeta();
+        break;
       case 'pause':
         if (k === 'p' || k === 'Escape' || k === 'Enter') this.togglePause(false);
         else if (k === 'r') this.startRun();
@@ -204,6 +246,8 @@ export class Game {
           break;
         }
       }
+      // 挑战追踪：5 分钟时刻的等级（提克）
+      if (this.world.time >= 300 && this.lvAt5min === 0) this.lvAt5min = this.world.player.level;
     }
 
     this.render(dtMs / 1000);
@@ -529,6 +573,118 @@ export class Game {
     this.acc = 0;
   }
 
+  // ---------- 角色 / 悖论 / 每日挑战（M3） ----------
+
+  /** 角色是否已解锁：初始(cost=0 且无挑战) / 时砂购买 / 挑战达成 */
+  private charUnlocked(id: string): boolean {
+    const c = characterById(id);
+    if (c.challenge) return this.saved.challenges.includes(c.challenge.key);
+    if (c.cost === 0) return true;
+    return this.saved.chars.includes(id);
+  }
+
+  /** 悖论等级 n 是否解锁：需已在 n−1 级获胜（n=0 恒开） */
+  private paradoxUnlocked(lvl: number): boolean {
+    return lvl <= this.saved.bestParadox + (this.saved.bestWin ? 1 : 0) || lvl === 0;
+  }
+
+  private setupView(): SetupView {
+    const key = dailyKey();
+    const dm = dailyMod(key);
+    const dailyChar = dailyCharacterId(key, CHARACTERS.map((c) => c.id));
+    const rec = this.saved.dailyBest[key];
+    return {
+      sand: this.saved.sand,
+      characters: CHARACTERS.map((c) => {
+        const unlocked = this.charUnlocked(c.id);
+        const selected = this.runOptions.character === c.id;
+        let costLabel: string;
+        if (selected) costLabel = '出战中';
+        else if (c.challenge) costLabel = unlocked ? '已解锁（点击选择）' : c.challenge.desc;
+        else if (c.cost === 0) costLabel = '初始角色';
+        else if (unlocked) costLabel = '已解锁';
+        else costLabel = `解锁需 ${c.cost} 时砂`;
+        return {
+          id: c.id, name: c.name, glyph: c.glyph, role: c.role, trait: c.traitNote,
+          state: selected ? 'selected' : unlocked ? 'owned' : 'buyable',
+          costLabel,
+        };
+      }),
+      paradox: PARADOX.map((p) => ({
+        lvl: p.lvl, name: p.name, desc: p.desc,
+        state: this.runOptions.paradox === p.lvl ? 'selected' : this.paradoxUnlocked(p.lvl) ? 'owned' : 'locked',
+      })),
+      daily: {
+        key,
+        modName: dm.name,
+        modDesc: dm.desc,
+        charName: characterById(dailyChar).name,
+        best: rec ? `${fmtTime(rec.time)} · 击杀 ${rec.kills} · Lv${rec.level}` : '暂无记录',
+        cleared: this.saved.dailyCleared.includes(key),
+      },
+    };
+  }
+
+  openSetup(): void {
+    this.setupReturn = this.state;
+    this.state = 'setup';
+    this.ui.showSetup(this.setupView());
+  }
+
+  private closeSetup(): void {
+    if (this.state !== 'setup') return;
+    this.ui.hideSetup();
+    this.state = this.setupReturn;
+    this.refreshTitleConfig();
+  }
+
+  private refreshTitleConfig(): void {
+    const c = characterById(this.runOptions.character);
+    const p = PARADOX[this.runOptions.paradox]!;
+    this.ui.setTitleConfig(
+      `出战角色 <b>${c.name}</b>（${c.role}） · 悖论 <b>${p.lvl} ${p.name}</b> · 密库 <i>${this.saved.nodes.length}</i> 节点 · 时砂 <i>${this.saved.sand}</i>`,
+    );
+  }
+
+  /** 选择角色：已解锁直接切换；未解锁则尝试用时砂购买（挑战角色需达成条件） */
+  selectChar(id: string): void {
+    const c = characterById(id);
+    if (this.charUnlocked(id)) {
+      this.runOptions.character = id;
+      this.ui.showSetup(this.setupView());
+      return;
+    }
+    if (c.challenge) {
+      this.ui.toast(`「${c.name}」需完成挑战：${c.challenge.desc}`);
+      return;
+    }
+    if (this.saved.sand < c.cost) {
+      this.ui.toast(`时砂不足：解锁「${c.name}」需 ${c.cost}（持有 ${this.saved.sand}）`);
+      return;
+    }
+    this.saved.sand -= c.cost;
+    this.saved.chars.push(id);
+    this.runOptions.character = id;
+    this.save();
+    this.telemetry.log(0, 'char_unlock', { id, cost: c.cost, sand: this.saved.sand });
+    this.ui.toast(`已解锁并选择「${c.name}」`, 'cyan');
+    this.ui.showSetup(this.setupView());
+  }
+
+  selectParadox(lvl: number): void {
+    if (!this.paradoxUnlocked(lvl)) {
+      this.ui.toast(`悖论 ${lvl} 未解锁：需先在悖论 ${lvl - 1} 获胜`);
+      return;
+    }
+    this.runOptions.paradox = lvl;
+    this.ui.showSetup(this.setupView());
+  }
+
+  startDaily(): void {
+    this.ui.hideSetup();
+    this.startRun(true);
+  }
+
   // ---------- 回响密库（GDD §6.8.2，M2 骨架） ----------
 
   /** 打开密库面板（标题页 / 结算页） */
@@ -612,14 +768,31 @@ export class Game {
 
   // ---------- 流程 ----------
 
-  startRun(): void {
-    this.seed = (Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
-    this.world.reset(this.seed, this.saved.firstRun, computeBonuses(this.saved.nodes));
+  startRun(asDaily = false): void {
+    const daily = asDaily;
+    this.runIsDaily = daily;
+    this.runOptions.daily = daily;
+    const key = dailyKey();
+    // 每日挑战：固定种子 + 固定角色（保证同日榜单可比）
+    this.seed = daily
+      ? dailySeed(key)
+      : (Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
+    if (daily) {
+      this.runOptions.character = dailyCharacterId(key, CHARACTERS.map((c) => c.id));
+      this.runOptions.paradox = 0;
+    }
+    const mods = computeRunMods(this.runOptions);
+    this.world.reset(this.seed, this.saved.firstRun, computeBonuses(this.saved.nodes), mods);
     this.telemetry.runStart(this.seed, this.saved.firstRun);
+    this.telemetry.log(0, 'run_config', {
+      character: mods.character, paradox: mods.paradox, daily,
+      dailyMod: mods.dailyModName, echoDelay: mods.echoDelayFrames, choiceCount: mods.choiceCount,
+    });
     if (this.saved.firstRun) {
       // §9 教学 0:00–0:10：移动是第一课（强提示 + 敌人从四周来）
       this.ui.toast('移动：W A S D / 方向键 —— 敌人会从四周涌来，别停下', 'cyan');
     }
+    if (daily) this.ui.toast(`每日挑战：${mods.dailyModName} —— ${mods.dailyModDesc}`, 'cyan');
     this.ui.hideAll();
     this.ui.showHud();
     this.ui.renderSlots(this.world);
@@ -633,6 +806,7 @@ export class Game {
     this.state = 'title';
     this.ui.hideAll();
     this.ui.showTitle();
+    this.refreshTitleConfig();
   }
 
   togglePause(on: boolean): void {
@@ -677,26 +851,74 @@ export class Game {
     this.acc = 0;
   }
 
+  /** 挑战解锁检查（提克：5 分钟内达 Lv12；诺恩：单局同步爆发 ≥10 次） */
+  private checkChallenges(win: boolean): string {
+    const w = this.world;
+    const done: string[] = [];
+    if (this.lvAt5min >= 12 && !this.saved.challenges.includes('lv12in5')) {
+      this.saved.challenges.push('lv12in5');
+      done.push('神童·提克');
+    }
+    if (w.stats.bursts >= 10 && !this.saved.challenges.includes('burst10')) {
+      this.saved.challenges.push('burst10');
+      done.push('完美回响·诺恩');
+    }
+    void win;
+    return done.length > 0 ? `挑战达成，解锁角色：${done.join('、')}` : '';
+  }
+
   private finishRun(win: boolean): void {
     this.state = 'result';
     const w = this.world;
     const st = w.stats;
     const minutes = w.time / 60;
     const sandBase = BAL.sand(minutes, st.kills, st.elitesKilled, st.bossKills, win) + st.sandBonus;
-    // 密库「贪婪」支线：时砂 +10%、胜利 ×1.25
+    // 密库「贪婪」支线 × 角色（皮普）× 悖论等级（每级 +10%）
     const sand = Math.round(
-      sandBase * (1 + w.meta.sandPct) * (win ? 1 + w.meta.winSandPct : 1),
+      sandBase
+        * (1 + w.meta.sandPct + w.run.sandPct)
+        * (win ? 1 + w.meta.winSandPct : 1)
+        * paradoxSandMult(w.run.paradox),
     );
     this.saved.sand += sand;
     this.saved.runs++;
     if (w.time > this.saved.bestTime) this.saved.bestTime = w.time;
     if (win) this.saved.bestWin = true;
+
+    // M3：悖论解锁（在 N 级获胜 → 解锁 N+1）与挑战解锁
+    let paradoxUnlocked = false;
+    if (win && w.run.paradox >= this.saved.bestParadox) {
+      this.saved.bestParadox = Math.min(5, w.run.paradox + 1);
+      paradoxUnlocked = true;
+    }
+    const challengeMsg = this.checkChallenges(win);
+
+    // M3：每日挑战结算（本地榜 + 首通奖励，同日只发一次，防刷）
+    let dailyMsg = '';
+    if (this.runIsDaily) {
+      const key = dailyKey();
+      const prev = this.saved.dailyBest[key];
+      const better = !prev || w.time > prev.time || (w.time === prev.time && st.kills > prev.kills);
+      if (better) this.saved.dailyBest[key] = { time: Math.round(w.time), kills: st.kills, level: w.player.level };
+      if (win && !this.saved.dailyCleared.includes(key)) {
+        this.saved.dailyCleared.push(key);
+        this.saved.sand += DAILY_FIRST_CLEAR_SAND;
+        dailyMsg = `每日首通 +${DAILY_FIRST_CLEAR_SAND} 时砂`;
+      } else {
+        dailyMsg = better ? '已刷新今日记录' : '今日记录未超过';
+      }
+    }
+
     this.saved.firstRun = false;
     this.save();
 
     const cov = st.hits > 0 ? Math.round((st.resHits / st.hits) * 1000) / 10 : 0;
     const resonancePerMin = w.time > 0 ? Math.round((st.resHits / w.time) * 60 * 10) / 10 : 0;
     const evolutions = [...w.player.evolutions].join('|');
+    this.telemetry.log(w.time, 'run_meta', {
+      character: w.run.character, paradox: w.run.paradox, daily: this.runIsDaily,
+      paradoxUnlocked, challengeMsg: challengeMsg || '', dailyMsg,
+    });
     this.telemetry.runEnd({
       seed: this.seed,
       firstRun: w.firstRun,
@@ -742,6 +964,12 @@ export class Game {
       evolutions: [...w.player.evolutions]
         .map((id) => this.altarOptions.find((e) => e.id === id)?.name ?? id)
         .join('、'),
+      character: characterById(w.run.character).name,
+      paradox: w.run.paradox,
+      dailyMod: this.runIsDaily ? w.run.dailyModName : '',
+      unlockMsg: [challengeMsg, paradoxUnlocked ? `悖论 ${this.saved.bestParadox} 已解锁` : '', dailyMsg]
+        .filter(Boolean)
+        .join(' · '),
       sand,
       totalSand: this.saved.sand,
       bestTime: this.saved.bestTime,

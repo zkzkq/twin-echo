@@ -55,8 +55,10 @@
           <span><span class="kbcap">空格 / E</span> 同步爆发</span>
           <span><span class="kbcap">P / Esc</span> 暂停</span>
         </div>
+        <div id="titleConfig" class="cfgline"></div>
         <button class="btn primary" id="btnStart">开始游戏（Enter）</button>
         <div class="row" style="margin-top:14px">
+          <button class="btn small" id="btnSetup">角色 / 难度 / 每日挑战</button>
           <button class="btn small" id="btnMetaTitle">回响密库（局外成长）</button>
           <button class="btn small ghost" id="btnMetaExport">导出存档码</button>
           <button class="btn small ghost" id="btnMetaImport">导入存档码</button>
@@ -72,6 +74,32 @@
         <div class="row">
           <button class="btn small" id="btnReroll">重掷 ×1（R）</button>
           <button class="btn small ghost" id="btnSkip">跳过（无奖励）</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="setup" class="panel hidden">
+      <div class="panelbox">
+        <div class="eyebrow c">角色 · 悖论难度 · 每日挑战</div>
+        <h2>标准局配置</h2>
+        <div class="mech"><p>时砂：<b class="a" id="setupSand">0</b> · 角色解锁需时砂或完成挑战 · 悖论难度需先通关上一级</p></div>
+        <div class="setupsection">
+          <div class="ss-title">角色（9）</div>
+          <div id="setupChars" class="chargrid"></div>
+        </div>
+        <div class="setupsection">
+          <div class="ss-title">悖论难度（0–5，每级 +10% 时砂）</div>
+          <div id="setupParadox" class="paraRow"></div>
+        </div>
+        <div class="setupsection">
+          <div class="ss-title">每日挑战（固定种子 + 每日变异 + 固定角色）</div>
+          <div id="setupDaily" class="dailyline"></div>
+          <div class="row" style="margin-top:10px">
+            <button class="btn small primary" id="btnDailyStart">开始今日挑战</button>
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn small primary" id="btnSetupClose">返回（Esc）</button>
         </div>
       </div>
     </div>

@@ -75,6 +75,7 @@ export function genChoices(w: World): Choice[] {
     }
   }
   for (const def of PASSIVES) {
+    if (w.run.noPassive) break; // 每日挑战「无被动日」
     const lv = p.passives.get(def.id) ?? 0;
     if (lv > 0) {
       if (lv < def.max) pool.push({ c: mkPassive(def, lv, false), weight: 1.1 });
@@ -91,7 +92,8 @@ export function genChoices(w: World): Choice[] {
     }];
   }
 
-  const chosen = weightedSampleN(w.rng, pool, Math.min(3, pool.length));
+  const n = Math.min(w.run.choiceCount, pool.length);
+  const chosen = weightedSampleN(w.rng, pool, n);
 
   // 命运加权保底
   let topId: string | null = null;

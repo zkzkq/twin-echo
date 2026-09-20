@@ -22,6 +22,24 @@ export interface UIHandlers {
   buyMeta(id: string): void;
   exportSave(): void;
   importSave(): void;
+  openSetup(): void;
+  closeSetup(): void;
+  selectChar(id: string): void;
+  selectParadox(lvl: number): void;
+  startDaily(): void;
+}
+
+/** 角色/悖论/每日配置面板视图 */
+export interface SetupCharView {
+  id: string; name: string; glyph: string; role: string; trait: string;
+  state: 'selected' | 'owned' | 'buyable' | 'locked';
+  costLabel: string;
+}
+export interface SetupView {
+  sand: number;
+  characters: SetupCharView[];
+  paradox: { lvl: number; name: string; desc: string; state: 'selected' | 'owned' | 'locked' }[];
+  daily: { key: string; modName: string; modDesc: string; charName: string; best: string; cleared: boolean };
 }
 
 /** 密库面板视图数据 */
@@ -56,6 +74,11 @@ export interface ResultData {
   bossKills: number;
   crystals: number;
   evolutions: string;
+  /** M3：本局配置与解锁提示 */
+  character: string;
+  paradox: number;
+  dailyMod: string;
+  unlockMsg: string;
   sand: number;
   totalSand: number;
   bestTime: number;
@@ -96,6 +119,12 @@ export class UI {
   private metaSand = $('metaSand');
   private metaProgress = $('metaProgress');
   private metaBranches = $('metaBranches');
+  private setupEl = $('setup');
+  private setupChars = $('setupChars');
+  private setupParadox = $('setupParadox');
+  private setupDaily = $('setupDaily');
+  private setupSand = $('setupSand');
+  private titleConfig = $('titleConfig');
   private toasts = $('toasts');
   private title = $('title');
   private levelup = $('levelup');
@@ -127,6 +156,51 @@ export class UI {
     $('btnMetaClose').onclick = () => h.closeMeta();
     $('btnMetaExport').onclick = () => h.exportSave();
     $('btnMetaImport').onclick = () => h.importSave();
+    $('btnSetup').onclick = () => h.openSetup();
+    $('btnSetupClose').onclick = () => h.closeSetup();
+    $('btnDailyStart').onclick = () => h.startDaily();
+  }
+
+  /** 角色 / 悖论 / 每日挑战配置面板（M3） */
+  showSetup(v: SetupView): void {
+    this.setupSand.textContent = `${v.sand}`;
+    this.setupChars.innerHTML = v.characters
+      .map(
+        (c) => `<button class="charcard ${c.state === 'selected' ? 'selected' : ''} ${c.state === 'locked' ? 'locked' : ''}" data-id="${c.id}">
+          <span class="cc-top"><span class="cc-name">${c.name}</span><span class="cc-glyph">${c.glyph}</span></span>
+          <span class="cc-role">${c.role}</span>
+          <span class="cc-trait">${c.trait}</span>
+          <span class="cc-cost">${c.costLabel}</span>
+        </button>`,
+      )
+      .join('');
+    this.setupChars.querySelectorAll('.charcard').forEach((el) => {
+      (el as HTMLElement).onclick = () => this.h.selectChar((el as HTMLElement).dataset.id ?? '');
+    });
+    this.setupParadox.innerHTML = v.paradox
+      .map(
+        (p) => `<button class="parabtn ${p.state === 'selected' ? 'selected' : ''} ${p.state === 'locked' ? 'locked' : ''}" data-lvl="${p.lvl}">
+          ${p.lvl} ${p.name}<small>${p.desc}</small>
+        </button>`,
+      )
+      .join('');
+    this.setupParadox.querySelectorAll('.parabtn:not(.locked)').forEach((el) => {
+      (el as HTMLElement).onclick = () => this.h.selectParadox(Number((el as HTMLElement).dataset.lvl ?? '0'));
+    });
+    this.setupDaily.innerHTML =
+      `<div><b>${v.daily.modName}</b> —— ${v.daily.modDesc}</div>` +
+      `<div class="dimb">日期 ${v.daily.key} · 固定角色 ${v.daily.charName} · 固定种子</div>` +
+      `<div class="dimb">今日记录：${v.daily.best}${v.daily.cleared ? ' · 首通奖励已领' : ' · 首通 +300 时砂'}</div>`;
+    this.setupEl.classList.remove('hidden');
+  }
+
+  hideSetup(): void {
+    this.setupEl.classList.add('hidden');
+  }
+
+  /** 标题页当前配置摘要 */
+  setTitleConfig(text: string): void {
+    this.titleConfig.innerHTML = text;
   }
 
   showTitle(): void {
@@ -135,7 +209,7 @@ export class UI {
   }
 
   hideAll(): void {
-    for (const el of [this.title, this.levelup, this.pause, this.result, this.hud, this.altar, this.meta]) {
+    for (const el of [this.title, this.levelup, this.pause, this.result, this.hud, this.altar, this.meta, this.setupEl]) {
       el.classList.add('hidden');
     }
   }
@@ -360,6 +434,8 @@ export class UI {
       stat(`${d.crystals}`, '回响结晶'),
       stat(`${d.elites}`, '精英击杀'),
       stat(`${d.bossKills}/4`, 'Boss 击杀'),
+      stat(d.paradox > 0 ? `悖论 ${d.paradox}` : '标准', `角色 ${d.character}`, true),
+      stat(d.dailyMod || '—', '每日变异'),
       stat(`+${d.sand}`, '时砂（M3 密库）'),
       stat(`${d.totalSand}`, '累计时砂'),
       stat(`${d.runs}`, '历史局数'),
@@ -367,9 +443,11 @@ export class UI {
       stat(rateOk ? '✓' : '—', '共鸣 KPI 达标', true),
     ].join('');
     const leftMin = Math.max(0, Math.ceil((BAL.meta.runSeconds - d.time) / 60));
-    this.resHint.textContent = d.win
-      ? '标准局达成——下一局试试更早凑齐进化配方（武器满级 + 配方被动满级 + 精英结晶）。'
-      : `差 ${leftMin} 分钟——让残影与你形成交叉火力，共鸣击频率会显著提升。`;
+    this.resHint.textContent =
+      (d.unlockMsg ? `🎉 ${d.unlockMsg} · ` : '') +
+      (d.win
+        ? '标准局达成——下一局试试更高悖论难度，或换角色构筑。'
+        : `差 ${leftMin} 分钟——让残影与你形成交叉火力，共鸣击频率会显著提升。`);
     this.result.classList.remove('hidden');
   }
 

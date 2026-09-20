@@ -275,6 +275,68 @@ try {
   })()`);
   check(metaBlocked.nodes === 2, '密库：前置/时砂校验阻止非法解锁', `仍为 ${metaBlocked.nodes} 节点`);
 
+  // 12.8 M3：角色特性 / 悖论难度 / 每日挑战 / 挑战解锁
+  const m3 = await cdp.eval(`(() => {
+    const g = __twinEcho;
+    g.saved.sand = 5000; g.saved.bestParadox = 1; g.saved.bestWin = true;
+    g.saved.nodes = []; // 隔离密库加成，避免影响期望值
+    // 角色「谐振者·铃」：共鸣窗口 1.0 → 1.4
+    g.runOptions.character = 'rin'; g.runOptions.paradox = 0;
+    g.startRun();
+    const rin = { window: +g.world.resonanceWindow().toFixed(2), char: g.world.run.character };
+    // 角色「见习者·米娅」：经验 +10%（把升级阈值抬高，避免升级吞掉 XP）
+    g.runOptions.character = 'mia'; g.startRun();
+    g.world.player.xp = 0; g.world.player.xpNeed = 1e9;
+    g.world.addXp(100);
+    const miaGain = +g.world.player.xp.toFixed(1);
+    // 角色「断剑士·凯」：本体伤害 +20%、残影系数 0.5（用时砂解锁后须重开局生效）
+    g.selectChar('kai');
+    g.startRun();
+    const kai = { body: g.world.run.bodyDmgPct, echoCoeff: g.world.run.echoCoeff, sand: g.saved.sand };
+    // 悖论 1「阴风」：敌移速 +8% 实际作用到敌人身上（spawnT 初值 1s，需 ≥60 帧）
+    g.runOptions.character = 'otto'; g.runOptions.paradox = 1; g.startRun();
+    __BAL.spawn.interval = [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05];
+    __BAL.spawn.batch = [5, 5, 5, 5, 5, 5, 5, 5, 5];
+    for (let i = 0; i < 130; i++) g.world.update(1/60);
+    const moth = g.world.enemies.items.find((e) => e.active && e.kind === 'moth' && !e.elite);
+    const para = { pct: g.world.run.enemySpeedPct, speed: moth ? +moth.speed.toFixed(1) : -1, expect: 129.6 };
+    return { rin, miaGain, kai, para };
+  })()`);
+  check(m3.rin.window === 1.4 && m3.rin.char === 'rin', '角色特性生效：铃的共鸣窗口 1.4s', `${m3.rin.window}s`);
+  check(m3.miaGain === 110, '角色特性生效：米娅经验 +10%', `100 XP → ${m3.miaGain}`);
+  check(Math.abs(m3.kai.body - 0.2) < 1e-6 && Math.abs(m3.kai.echoCoeff - 0.5) < 1e-6, '角色特性：凯（本体+20% / 残影 0.5）', `body ${m3.kai.body} · coeff ${m3.kai.echoCoeff} · 剩余时砂 ${m3.kai.sand}`);
+  check(Math.abs(m3.para.pct - 0.08) < 1e-6 && Math.abs(m3.para.speed - m3.para.expect) < 0.3, '悖论 1 应用：敌移速 120 → 129.6', `实测 ${m3.para.speed}（pct=${m3.para.pct}）`);
+
+  const daily = await cdp.eval(`(() => {
+    const g = __twinEcho;
+    const before = g.saved.sand;
+    g.saved.dailyCleared = []; g.saved.dailyBest = {};
+    g.startDaily();
+    const mods = { daily: g.world.run.daily, mod: g.world.run.dailyModName, char: g.world.run.character, seed: g.seed };
+    g.world.time = 1199.99; g.world.update(1/60);   // 跨过 20:00 触发胜利结算
+    return {
+      mods,
+      state: g.state,
+      cleared: g.saved.dailyCleared.length,
+      bestTime: Object.values(g.saved.dailyBest)[0]?.time ?? 0,
+      sandGain: g.saved.sand - before,
+    };
+  })()`);
+  check(daily.mods.daily === true && daily.mods.mod !== '' && daily.mods.seed > 0, '每日挑战：固定种子 + 每日变异', `变异「${daily.mods.mod}」· 角色 ${daily.mods.char}`);
+  check(daily.cleared === 1 && daily.bestTime > 0, '每日挑战：首通记录与本地榜写入', `记录 ${daily.bestTime}s · 首通标记 ${daily.cleared} · 状态 ${daily.state}`);
+  check(daily.sandGain >= 300, '每日挑战：首通 +300 时砂', `本局共得 ${daily.sandGain} 时砂`);
+
+  const challenge = await cdp.eval(`(() => {
+    const g = __twinEcho;
+    g.saved.challenges = [];
+    g.runOptions.character = 'otto'; g.runOptions.paradox = 0;
+    g.startRun();
+    g.lvAt5min = 12; g.world.stats.bursts = 12;
+    g.finishRun(true);
+    return { challenges: [...g.saved.challenges] };
+  })()`);
+  check(challenge.challenges.length === 2, '挑战解锁：5min 达 Lv12 / 单局爆发 ≥10', challenge.challenges.join(' + '));
+
   // 13. 运行时异常
   check(cdp.errors.length === 0, '无未捕获运行时异常', cdp.errors.slice(0, 2).join(' | '));
   check(cdp.consoleErrors.length === 0, '无 console.error', cdp.consoleErrors.slice(0, 2).join(' | '));

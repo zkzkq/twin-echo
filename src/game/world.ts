@@ -14,6 +14,7 @@ import { mergePass, spawnCrystal, spawnGem, spawnHeal, updateGems } from './gems
 import { clearAltars, interruptAltars, spawnAltar, updateAltars } from './altar';
 import { eventGaugeMult, eventSpawnMult, rollEvent, updateEvents, type EventKind } from './events';
 import { EMPTY_BONUSES, type MetaBonuses } from './meta';
+import { defaultRunMods, type RunMods } from './runconfig';
 import type {
   Altar, Bullet, Enemy, EchoState, EchoEvent, Gem, OrbitState, Particle, PlayerState, RingFx, RunStats,
   TrailSeg, WorldFlags,
@@ -106,6 +107,12 @@ export class World {
   trailTimer = { body: 0, echo: 0 };
   /** 回响密库增益（局外成长，GDD §6.8.2） */
   meta: MetaBonuses = { ...EMPTY_BONUSES };
+  /** 本局配置修正（角色 / 悖论难度 / 每日挑战，M3） */
+  run: RunMods = defaultRunMods();
+  /** 同步爆发后的临时攻速加成剩余（诺恩） */
+  burstHasteT = 0;
+  /** 受击时停的内置冷却（诺亚） */
+  stasisCd = 0;
 
   boss: Enemy | null = null;
   pendingLevelUps = 0;
@@ -202,7 +209,7 @@ export class World {
     this.reset(1, true);
   }
 
-  reset(seed: number, firstRun: boolean, meta: MetaBonuses = EMPTY_BONUSES): void {
+  reset(seed: number, firstRun: boolean, meta: MetaBonuses = EMPTY_BONUSES, run: RunMods = defaultRunMods()): void {
     this.rng = new RNG(seed);
     this.frame = 0;
     this.time = 0;
@@ -211,24 +218,32 @@ export class World {
     this.deathSent = false;
     this.firstRun = firstRun;
     this.meta = meta;
+    this.run = run;
+    this.burstHasteT = 0;
+    this.stasisCd = 0;
 
     this.player = {
       x: 0, y: 0, hp: 100, maxHp: 100, radius: BAL.player.radius, speed: BAL.player.speed,
       pickupR: BAL.player.pickupR, facing: 0, invulnT: 0, hurtCd: 0, slowT: 0,
       level: 1, xp: 0, xpNeed: BAL.xpCurve(1), gauge: 0, crystals: 0, evolutions: new Set<string>(),
-      weapons: new Map([['clock', { lv: 1 + meta.startWeaponLv, cd: 0.3 }]]),
+      weapons: new Map([[run.startWeapon || 'clock', { lv: 1 + meta.startWeaponLv, cd: 0.3 }]]),
       passives: new Map(),
       stats: { dmg: 0, atkSpd: 0, critCh: 0.05, critDmg: 1.5, moveSpd: 0, resDmg: 0, resGain: 0, cd: 0, area: 0, echoRange: 1 },
     };
     recompute(this.player);
     // 密库增益（局外成长）
     this.player.maxHp += meta.hpBonus;
-    this.player.hp = this.player.maxHp;
     this.player.pickupR *= 1 + meta.pickupPct;
     this.player.speed *= 1 + meta.moveSpdPct;
     this.player.stats.critCh += meta.critBonus;
     this.player.stats.cd += meta.cdPct;
     this.player.stats.resDmg += meta.resDmgPct;
+    // 本局修正（角色 / 悖论 / 每日）
+    this.player.maxHp = Math.max(20, Math.round((this.player.maxHp + run.hpDelta) * (1 + run.hpPct)));
+    this.player.pickupR *= 1 + run.pickupPct;
+    this.player.speed *= 1 + run.moveSpdPct;
+    this.player.stats.resDmg += run.resDmgPct;
+    this.player.hp = this.player.maxHp;
 
     this.echo = {
       x: 0, y: 0, facing: 0,
@@ -390,6 +405,8 @@ export class World {
     const e = this.echo;
     p.invulnT = Math.max(0, p.invulnT - dt);
     p.hurtCd = Math.max(0, p.hurtCd - dt);
+    if (this.stasisCd > 0) this.stasisCd -= dt;
+    if (this.burstHasteT > 0) this.burstHasteT -= dt;
 
     let mx = this.input.x;
     let my = this.input.y;
@@ -424,8 +441,8 @@ export class World {
     e.head = (e.head + 1) % ECHO_BUF;
     if (e.count < ECHO_BUF) e.count++;
 
-    // 重演位置：延迟 = min(已记录帧数, 配置延迟)；开局不足时贴身跟随
-    const delay = Math.min(e.count, BAL.echo.delayFrames);
+    // 重演位置：延迟 = min(已记录帧数, 本局延迟)；开局不足时贴身跟随
+    const delay = Math.min(e.count, this.run.echoDelayFrames);
     const idx = (e.head - delay + ECHO_BUF) % ECHO_BUF;
     e.x = e.bx[idx]!;
     e.y = e.by[idx]!;
@@ -525,7 +542,7 @@ export class World {
     if (t >= this.eliteT) {
       this.stats.elitesSpawned++;
       spawnElite(this);
-      this.eliteT = t + BAL.elite.every + this.rng.range(-BAL.elite.jitter, BAL.elite.jitter);
+      this.eliteT = t + (BAL.elite.every + this.rng.range(-BAL.elite.jitter, BAL.elite.jitter)) / this.run.eliteFreqMult;
     }
     if (t >= this.swarmT) {
       // 蜂群：整面"虫墙"从单侧压入
@@ -541,11 +558,15 @@ export class World {
     const firstSlow = this.firstRun && t < 90 ? 2 : 1;
     const rush = t >= BAL.rush.start;
     const interval = interp(BAL.spawn.minute, BAL.spawn.interval, m) * firstSlow * (rush ? BAL.rush.intervalMult : 1);
-    const batch = (interp(BAL.spawn.minute, BAL.spawn.batch, m) + (rush ? BAL.rush.batchAdd : 0)) * eventSpawnMult(this);
+    const batch = (interp(BAL.spawn.minute, BAL.spawn.batch, m) + (rush ? BAL.rush.batchAdd : 0))
+      * eventSpawnMult(this) * (1 + this.run.spawnPct);
     const cap = interp(BAL.spawn.minute, BAL.spawn.cap, m);
 
     this.spawnT -= dt;
-    if (this.spawnT <= 0) {
+    // M3：Boss 战期间暂停常规生成 —— 避免"Boss 弹幕 + 虫潮"叠加把玩家夹死，
+    // 同时让 Boss 战读图清晰（开关式设计，便于试玩对比）。
+    const bossFighting = this.boss !== null && this.boss.active;
+    if (this.spawnT <= 0 && !bossFighting) {
       this.spawnT = Math.max(0.12, interval);
       // 小数批量 → 累积债务取整，保证长窗口生成速率精确
       this.spawnDebt += batch;
@@ -563,7 +584,7 @@ export class World {
 
   addXp(v: number): void {
     const p = this.player;
-    p.xp += v;
+    p.xp += v * (1 + this.run.xpPct);
     while (p.xp >= p.xpNeed) {
       p.xp -= p.xpNeed;
       p.level++;
@@ -580,6 +601,12 @@ export class World {
     if (!this.running || p.invulnT > 0 || p.hurtCd > 0) return;
     p.hp -= dmg;
     p.hurtCd = BAL.player.hurtGrace;
+    // 角色「时停者·诺亚」：受击 30% 概率时停 0.5s（内置 CD 5s）
+    if (this.run.stasisOnHitChance > 0 && this.stasisCd <= 0 && this.rng.chance(this.run.stasisOnHitChance)) {
+      this.stasisCd = 5;
+      for (const e of this.enemies.items) if (e.active) e.frozenT = Math.max(e.frozenT, 0.5);
+      this.spawnRing(p.x, p.y, 10, 420, 0.4, COLORS.echo, 0.8);
+    }
     interruptAltars(this); // GDD §6.5：祭坛引导受击打断（走位风险决策点）
     this.stats.damageTaken += dmg;
     this.audio.hurt();
@@ -731,14 +758,14 @@ export class World {
     return panelDps(this);
   }
 
-  /** 共鸣值获取倍率（共鸣泉事件 ×2 + 密库共鸣支线） */
+  /** 共鸣值获取倍率（共鸣泉事件 ×2 + 密库 + 每日挑战） */
   gaugeMult(): number {
-    return eventGaugeMult(this) * (1 + this.meta.gaugeGainPct);
+    return eventGaugeMult(this) * (1 + this.meta.gaugeGainPct) * (1 + this.run.gaugeGainPct);
   }
 
-  /** 共鸣判定窗口（含密库 +0.1s/节点） */
+  /** 共鸣判定窗口（全局 + 密库 + 角色/每日） */
   resonanceWindow(): number {
-    return BAL.resonance.window + this.meta.windowBonus;
+    return BAL.resonance.window + this.meta.windowBonus + this.run.resWindowBonus;
   }
 
   /** 事件/系统用的对外伤害入口 */
